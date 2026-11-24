@@ -29,6 +29,9 @@ button.primary:hover:not(:disabled) { border-color: var(--accent-hover); backgro
 button.danger { border-color: rgba(239, 68, 68, .8); background: rgba(185, 28, 28, .75); color: #fff; }
 button.danger:hover:not(:disabled) { border-color: var(--bad); background: #b91c1c; }
 button.large { min-height: 44px; padding-inline: 1.1rem; font-weight: 650; }
+button.loading { display: inline-flex; align-items: center; justify-content: center; gap: .55rem; }
+.activity-indicator { width: 13px; height: 13px; flex: none; border: 2px solid rgba(255, 255, 255, .38); border-top-color: #fff; border-radius: 50%; animation: activity-spin .75s linear infinite; }
+@keyframes activity-spin { to { transform: rotate(360deg); } }
 input, select, textarea { border: 1px solid var(--line); border-radius: 6px; outline: none; background: #080a10; color: var(--fg); }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(54, 101, 182, .2); }
 input[type="text"], input:not([type]) { width: 100%; padding: .6rem .7rem; }

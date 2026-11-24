@@ -354,7 +354,11 @@ async function enterRoom(create = false) {
   const button = $('#createRoom');
   const originalLabel = button.textContent;
   button.disabled = true;
-  button.textContent = create ? 'Creating room…' : 'Joining room…';
+  button.replaceChildren(
+    element('span', 'activity-indicator', ''),
+    document.createTextNode(create ? 'Creating room…' : 'Joining room…'),
+  );
+  button.classList.add('loading');
   button.setAttribute('aria-busy', 'true');
   try {
     if (!(await ensureDisclosure())) return;
@@ -373,6 +377,7 @@ async function enterRoom(create = false) {
   } finally {
     button.disabled = false;
     button.textContent = originalLabel;
+    button.classList.remove('loading');
     button.removeAttribute('aria-busy');
   }
 }
