@@ -6,13 +6,14 @@ This is not storage, a cloud locker, a mailbox, or â€œAirDrop for the internet.â
 
 ## Status
 
-`v0.2.3` is the room and bidirectional-transfer release, styled to match the rest of the webCLI family. The automated suite covers:
+`v0.2.4` is the room and bidirectional-transfer release, styled to match the rest of the webCLI family. The automated suite covers:
 
 - a 128-bit invite secret that appears only in the URL fragment;
 - different `drop-webCLI` topic/password derivation labels;
 - room invitation and membership;
 - bidirectional transfer between people in the same room;
 - explicit per-file receiver acceptance;
+- a visible pending-accept alert and browser-tab count for incoming files;
 - preparation-time and receive-time incremental SHA-256;
 - dedicated ordered, reliable 16 KiB data channels with 4 MiB / 1 MiB backpressure watermarks;
 - byte-accurate progress, filename sanitization, executable warnings, and manifest limits;
@@ -34,6 +35,8 @@ npm start
 Open `http://localhost:8080/`, enter a display name, and select **Create room**. Copy the room link and open it in another browser profile or device that can reach the page. The invited person chooses a name and selects **Join room**. Anyone can then select **Everyone** or a specific person, choose files, and send.
 
 On the receiving side, every offered file remains independent: review its sender, name, size, executable warning, and total state, then choose **Accept**, **Accept to folder**, or **Decline**. The static server only receives page requests; it does not receive file bytes or the fragment secret.
+
+Incoming offers also produce an in-page alert showing how many files await acceptance and a matching count in the browser tab title. If the tab is hidden and the user has already granted browser notification permission, a native notification is shown as an additional reminder. drop-webCLI never requests notification permission automatically.
 
 Run the checks:
 

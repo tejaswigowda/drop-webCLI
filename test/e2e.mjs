@@ -97,11 +97,17 @@ try {
   check('DP7 hashes are offered only after preparation',
     await until(async () => await receiver.locator('#incoming .file').count() === 2, 10_000));
   check('DP14 each file requires explicit Accept', await receiver.locator('[data-action^="accept-"]').count() === 2);
+  check('incoming files show a waiting alert and tab badge',
+    /2 incoming files waiting/.test(await receiver.textContent('#incomingAlert'))
+      && (await receiver.title()).startsWith('(2)'));
   check('DP19 sender name is labelled unverified', /unverified/.test(await receiver.textContent('#incoming')));
   const acceptButtons = receiver.locator('[data-action^="accept-"]');
   await acceptButtons.first().click();
   check('accepting one file does not accept the other',
     await until(async () => await receiver.locator('[data-action^="accept-"]').count() === 1, 10_000));
+  check('incoming alert count decreases per accepted file',
+    /1 incoming file waiting/.test(await receiver.textContent('#incomingAlert'))
+      && (await receiver.title()).startsWith('(1)'));
   await receiver.locator('[data-action^="accept-"]').click();
 
   if (corrupt) {
