@@ -74,6 +74,17 @@ try {
   const receiver = await open();
   receiver.on('request', (request) => requests.push(request.url()));
   await receiver.goto(invite);
+  const inviteTheme = await receiver.evaluate(() => ({
+    background: getComputedStyle(document.body).backgroundColor,
+    header: getComputedStyle(document.querySelector('header')).backgroundColor,
+    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    stylesheet: document.querySelector('link[rel="stylesheet"]')?.href || '',
+  }));
+  check('shared-link landing has the versioned webCLI theme',
+    inviteTheme.background === 'rgb(13, 15, 26)'
+      && inviteTheme.header === 'rgb(21, 24, 39)'
+      && inviteTheme.overflow === 0
+      && inviteTheme.stylesheet.includes('style.css?v='));
   await receiver.fill('#displayName', 'Bob');
   await receiver.click('#createRoom');
   await receiver.waitForSelector('#roomScreen:not(.hidden)', { timeout: 45_000 });
