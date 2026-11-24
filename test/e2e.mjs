@@ -83,7 +83,8 @@ try {
     const senderFailed = await until(async () => (await sender.locator('#receivers').textContent()).match(/mismatch ✗/g)?.length === 2, 45_000);
     check('DP9 a transit mismatch is never presented as a file', receiverFailed && senderFailed
       && await receiver.getByRole('button', { name: 'Save' }).count() === 0
-      && /discarded/.test(await receiver.textContent('#incomingFiles')));
+      && /discarded/.test(await receiver.textContent('#incomingFiles')),
+    `${await receiver.textContent('#incomingFiles')} | ${await sender.textContent('#receivers')} | saves ${await receiver.getByRole('button', { name: 'Save' }).count()}`);
   } else {
     const receiverVerified = await until(async () => (await receiver.locator('#incomingFiles .status.ok').count()) === 2, 45_000);
     const senderVerified = await until(async () => (await sender.locator('#receivers').textContent()).match(/verified ✓/g)?.length === 2, 45_000);

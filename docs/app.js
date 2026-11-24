@@ -152,6 +152,16 @@ class TrackedPC extends RTCPeerConnection {
     allPCs.delete(this);
     return super.close();
   }
+  get ondatachannel() {
+    return this.trysteroOnDataChannel || null;
+  }
+  set ondatachannel(handler) {
+    this.trysteroOnDataChannel = typeof handler === 'function' ? handler : null;
+    super.ondatachannel = handler ? (event) => {
+      if (event.channel.label.startsWith('drop:')) return;
+      handler.call(this, event);
+    } : null;
+  }
 }
 
 function peerIdForConnection(pc) {
@@ -337,8 +347,8 @@ async function onControl(message, context) {
   }
   if (message.type === 'done' && state.role === 'receiver') {
     const receive = state.receive.get(message.id);
-    if (receive?.state === 'verified') {
-      send(state.senderPeerId, { type: 'verify', id: receive.id, ok: true });
+    if (receive?.state === 'verified' || receive?.state === 'failed') {
+      send(state.senderPeerId, { type: 'verify', id: receive.id, ok: receive.state === 'verified' });
       return;
     }
     if (receive?.state === 'sending') {
@@ -607,6 +617,15 @@ async function waitForChannelEmpty(channel) {
   if (channel.readyState !== 'open') throw new Error('The file channel closed before its final bytes drained.');
 }
 
+async function waitForVerification(transfer) {
+  const started = Date.now();
+  while (!['verified', 'failed'].includes(transfer.state)) {
+    if (Date.now() - started > STALL_MS) throw new Error('The receiver did not confirm the SHA-256 within 15 seconds.');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return transfer.state === 'verified';
+}
+
 async function transferToReceiver(peerId) {
   const receiver = state.receivers.get(peerId);
   receiver.state = 'sending';
@@ -653,7 +672,9 @@ async function transferToReceiver(peerId) {
       transfer.message = 'sent; waiting for receiver SHA-256';
       renderReceivers();
       await send(peerId, { type: 'done', id, bytes: transfer.bytes });
+      const verified = await waitForVerification(transfer);
       channel.close();
+      if (!verified) continue;
     } catch (cause) {
       transfer.state = 'failed';
       transfer.message = cause?.message || String(cause);
