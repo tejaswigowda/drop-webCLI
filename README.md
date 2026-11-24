@@ -142,6 +142,8 @@ Opening the page by the computer's reachable LAN IP can make it reachable to ano
 
 The hidden console offers `/peers`, `/path`, `/diag`, `/relays`, `/egress`, `/hash <file>`, and `/about`.
 
+If a peer cannot connect, the page now reports one of these named causes using candidate types and address classes only: `NO_CANDIDATES`, `HIDDEN_LOCAL_ADDRESS`, `NETWORK_ISOLATION`, or `NO_DIRECT_PATH`. It intentionally does not display a peer's IP address or suggest editing library configuration. The recommended recovery is to try another network, cellular, or a browser/network configuration that permits direct WebRTC.
+
 ## Prior art
 
 - [FilePizza](https://file.pizza/) — peer-to-peer file transfer by link.

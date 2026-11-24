@@ -128,6 +128,11 @@ class TrackedPC extends RTCPeerConnection {
   constructor(config) {
     super(config);
     allPCs.add(this);
+    this._localCandidates = [];
+    this._remoteCandidates = [];
+    this.addEventListener('icecandidate', (event) => {
+      if (event.candidate?.candidate) this._localCandidates.push(event.candidate.candidate);
+    });
     this.addEventListener('datachannel', (event) => onIncomingDataChannel(this, event.channel));
     this.addEventListener('connectionstatechange', () => {
       if (this.connectionState === 'closed') allPCs.delete(this);
@@ -145,6 +150,10 @@ class TrackedPC extends RTCPeerConnection {
       if (!event.channel.label.startsWith('drop:')) handler.call(this, event);
     } : null;
   }
+  addIceCandidate(candidate, ...rest) {
+    if (candidate?.candidate) this._remoteCandidates.push(candidate.candidate);
+    return super.addIceCandidate(candidate, ...rest);
+  }
 }
 
 function peerIdForConnection(pc) {
@@ -161,6 +170,52 @@ function getPeerConnection(peerId) {
 
 function connectionLabel(pc) {
   return `Connection ${pc?.connectionState || 'closed'}${pc ? ` / ICE ${pc.iceConnectionState}` : ''}`;
+}
+
+function candidateSummary(line) {
+  const fields = String(line).replace(/^a=/, '').split(' ');
+  const type = /\btyp (\w+)/.exec(line)?.[1] || 'unknown';
+  const address = fields[4] || '';
+  let addressClass;
+  if (type === 'relay') addressClass = 'relay';
+  else if (address.endsWith('.local')) addressClass = 'mdns';
+  else if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|fe80:|fc|fd)/i.test(address)) addressClass = 'private';
+  else addressClass = 'public';
+  return { type, addressClass };
+}
+
+function diagnoseConnection(pc) {
+  const local = pc?._localCandidates.map(candidateSummary) || [];
+  const remote = [
+    ...(pc?.remoteDescription?.sdp.match(/^a=candidate:.*$/gm) || []).map((line) => candidateSummary(line)),
+    ...(pc?._remoteCandidates.map(candidateSummary) || []),
+  ];
+  const host = (items) => items.filter((item) => item.type === 'host');
+  const localMdns = host(local).some((item) => item.addressClass === 'mdns');
+  const remoteMdns = host(remote).some((item) => item.addressClass === 'mdns');
+  const localPrivate = host(local).some((item) => item.addressClass === 'private');
+  const remotePrivate = host(remote).some((item) => item.addressClass === 'private');
+  if (!local.length || !remote.length) {
+    return { code: 'NO_CANDIDATES', text: 'One browser offered no usable connection candidates. A VPN, browser privacy setting, or restrictive network may be blocking WebRTC.' };
+  }
+  if (localMdns || remoteMdns) {
+    return { code: 'HIDDEN_LOCAL_ADDRESS', text: 'One browser hid a same-network address behind an mDNS name. Try another browser, disable the browser’s WebRTC mDNS hiding for this test, or use a cellular network.' };
+  }
+  if (localPrivate && remotePrivate) {
+    return { code: 'NETWORK_ISOLATION', text: 'Both devices offered local-network addresses, but the network did not let them connect. Guest Wi-Fi, client isolation, a VPN, or a device firewall may be keeping them apart. Try cellular or a different network.' };
+  }
+  return { code: 'NO_DIRECT_PATH', text: 'The browsers could not find a direct network path. Try cellular or another network. No TURN relay is configured, so this version cannot cross every NAT or firewall.' };
+}
+
+function onRoomError(event) {
+  if (event?.code !== 'peer-connect-failed') {
+    error(`Connection error: ${event?.message || String(event)}`);
+    return;
+  }
+  const pc = [...allPCs].find((item) => item.connectionState === 'failed' || item.iceConnectionState === 'failed');
+  const diagnosis = diagnoseConnection(pc);
+  const who = peerName(event.peerId);
+  error(`Couldn't connect to ${who}. ${diagnosis.text} [${diagnosis.code}]`);
 }
 
 function handleConnectionChange(pc) {
@@ -205,7 +260,7 @@ async function connectRoom() {
   state.action.onMessage(onControl);
   state.room.onPeerJoin(onPeerJoin);
   state.room.onPeerLeave(onPeerLeave);
-  state.room.onError((event) => error(`Connection error: ${event?.message || String(event)}`));
+  state.room.onError(onRoomError);
   const self = await state.room.getSelf();
   state.selfId = self.peerId;
   state.joined = true;
@@ -984,7 +1039,7 @@ addEventListener('pagehide', () => {
   void cleanupRoom({ notify: false });
 });
 
-window.drop = { state, allPCs, deriveRoom, executableWarning, sanitizeManifestNames, validateManifest, runConsole, loadVerified };
+window.drop = { state, allPCs, deriveRoom, executableWarning, sanitizeManifestNames, validateManifest, runConsole, loadVerified, diagnoseConnection };
 
 initializeEvents();
 if (state.secret) {

@@ -85,6 +85,11 @@ try {
       && inviteTheme.header === 'rgb(21, 24, 39)'
       && inviteTheme.overflow === 0
       && inviteTheme.stylesheet.includes('style.css?v='));
+  check('connection diagnostics name actionable causes without IP data', await receiver.evaluate(() => {
+    const pc = { _localCandidates: ['candidate:1 1 udp 1 192.168.1.2 1234 typ host'], _remoteCandidates: ['candidate:2 1 udp 1 192.168.1.3 5678 typ host'] };
+    const diagnosis = window.drop.diagnoseConnection(pc);
+    return diagnosis.code === 'NETWORK_ISOLATION' && !diagnosis.text.includes('192.168.');
+  }));
   await receiver.fill('#displayName', 'Bob');
   await receiver.click('#createRoom');
   await receiver.waitForSelector('#roomScreen:not(.hidden)', { timeout: 45_000 });
