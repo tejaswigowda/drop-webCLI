@@ -80,6 +80,9 @@ p { margin: .4rem 0 1rem; }
 .keep { margin: .65rem 0 0; color: var(--warn); font-size: .82rem; }
 .title-row { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; }
 .title-row > :last-child { margin-left: auto; }
+#roomScreen > .title-row { align-items: flex-start; }
+#roomScreen > .title-row > div { margin-right: auto; margin-left: 0; text-align: left; }
+#roomScreen > .title-row h1, #roomScreen > .title-row .eyebrow { text-align: left; }
 
 #roomScreen > h2 { margin: 1.4rem 0 .65rem; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; font-size: .75rem; }
 .people-list { display: flex; flex-wrap: wrap; gap: .5rem; }
