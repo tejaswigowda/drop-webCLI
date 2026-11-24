@@ -67,6 +67,12 @@ try {
           },
         },
       });
+      window.__automaticDownloads = 0;
+      const originalClick = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function (...args) {
+        if (this.download && this.href.startsWith('blob:')) window.__automaticDownloads++;
+        return originalClick.apply(this, args);
+      };
       localStorage.setItem('drop.dev', JSON.stringify({
         relays: relayUrls || [relayUrl],
         localIce: true,
@@ -163,7 +169,9 @@ try {
     const senderVerified = await until(async () => (await sender.locator('#outgoing').textContent()).match(/verified ✓/g)?.length === 2, 45_000);
     check(`DP6–DP10 ${browserName} chunks transfer and both sides verify SHA-256`, receiverVerified && senderVerified,
       `${await receiver.textContent('#incoming')} | ${await sender.textContent('#outgoing')}`);
-    check('DP15 received content has Save buttons and never auto-downloads', await receiver.getByRole('button', { name: 'Save' }).count() === 2);
+    check('DP15 received content downloads automatically with no Save step',
+      await receiver.getByRole('button', { name: 'Save' }).count() === 0
+        && await until(async () => await receiver.evaluate(() => window.__automaticDownloads === 2), 10_000));
     check('screen wake lock is released after incoming transfers finish', await until(async () =>
       await receiver.evaluate(() => window.__wakeLocks.released > 0), 10_000));
 

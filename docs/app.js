@@ -6,7 +6,7 @@ import {
 } from './lib/core.js';
 
 const PINS = /*PINS*/{"trystero-nostr.js":{"version":"0.27.0","package":"@trystero-p2p/nostr","sha256":"d26013f7ecae563f4fcdbf7dece219cfdb5f2d3efc2caff32df9a768d5066fc6"},"qrcode.js":{"version":"1.5.2","package":"qrcode-generator","sha256":"065509cfd450f89dbffccc8e37d16f5cb03099aef7c36ab2a23d27611bd97b03"},"sha256.js":{"version":"2.0.1","package":"@noble/hashes","sha256":"d1cc9098f317cf4c5c1652090f680cd4303a9854e345845199ccdae64269c79e"}}/*END-PINS*/;
-const VERSION = '0.2.6';
+const VERSION = '0.2.7';
 const APP_DIR = (() => {
   const pathname = location.pathname;
   if (pathname.endsWith('/')) return pathname;
@@ -644,11 +644,8 @@ function renderIncoming() {
     }
     if (receive.state === 'verified') {
       card.append(element('div', 'file-meta mono', `sha256 ${receive.sha256.slice(0, 8)}…`));
-      if (receive.url) {
-        const save = element('button', 'primary', 'Save');
-        save.addEventListener('click', () => saveBlob(receive));
-        card.append(save);
-      } else if (receive.savedPath) card.append(element('div', 'file-meta', `Saved as ${receive.savedPath}`));
+      if (receive.downloaded) card.append(element('div', 'file-meta status ok', `downloaded as ${receive.saveName}`));
+      else if (receive.savedPath) card.append(element('div', 'file-meta', `Saved as ${receive.savedPath}`));
     }
     ui.incoming.append(card);
   }
@@ -1020,6 +1017,11 @@ async function finishReceive(receive) {
   }
   receive.state = 'verified';
   receive.message = 'verified ✓';
+  if (receive.url) {
+    saveBlob(receive);
+    receive.downloaded = true;
+    receive.message = 'verified ✓ · download started';
+  }
   send(receive.peerId, { type: 'verify', fileId: receive.id, ok: true });
   renderIncoming();
   void syncWakeLock();
@@ -1040,7 +1042,10 @@ function saveBlob(receive) {
   const anchor = document.createElement('a');
   anchor.href = receive.url;
   anchor.download = receive.saveName;
+  anchor.style.display = 'none';
+  document.body.append(anchor);
   anchor.click();
+  anchor.remove();
 }
 
 async function updatePaths() {

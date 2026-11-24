@@ -7,11 +7,11 @@ This is not storage, a cloud locker, a mailbox, or “AirDrop for the internet.�
 **It does not break the static-page boundary. It trades storage for synchrony.** drop-webCLI keeps both parties present instead of storing a payload. box-webCLI is deliberately the opposite architecture: stored content and token-based access.
 
 **Live app:** https://drop.webcli.app/
-**Status:** v0.2.6; functional for current desktop testing, with browser-size ceilings, throughput, and the wider device matrix still explicitly pending below.
+**Status:** v0.2.7; functional for current desktop testing, with browser-size ceilings, throughput, and the wider device matrix still explicitly pending below.
 
 ## Status
 
-`v0.2.6` enforces the two-person, 60-minute room-link policy, adds folder-backed resume, and keeps supported displays awake during incoming transfers. The automated suite covers:
+`v0.2.7` enforces the two-person, 60-minute room-link policy, adds folder-backed resume, keeps supported displays awake during incoming transfers, and automatically downloads verified in-memory files. The automated suite covers:
 
 - a 128-bit invite secret that appears only in the URL fragment;
 - different `drop-webCLI` topic/password derivation labels;
@@ -43,6 +43,8 @@ npm start
 Open the live app or `http://localhost:8080/`, enter a display name, and select **Create room**. Copy the room link and open it in another browser profile or device. The link is valid for 60 minutes. The invited person chooses a name and selects **Join room**. A room accepts at most two participants total; a third receives `ROOM_FULL`.
 
 On the receiving side, every offered file remains independent: review its sender, name, size, executable warning, and stable per-session identifier, then choose **Accept**, **Accept to folder**, or **Decline**. The static server receives only page requests; it does not receive the fragment secret or file bytes.
+
+Verified in-memory files begin downloading automatically; there is no second Save action. Folder-picked files are finalized directly in the selected folder after verification. Browsers may prompt once for permission to allow multiple automatic downloads.
 
 After a file is accepted, the page requests the Screen Wake Lock API where available so the display remains awake while incoming data is waiting, receiving, checking, or resumable. The lock is released when no accepted incoming transfer remains active, when the tab is hidden, or when the room is left. Unsupported browsers continue normally.
 
@@ -83,7 +85,7 @@ Closing an active room is destructive by design:
 - Closing, reloading, or navigating away from an active room triggers the browser's native tab-close confirmation.
 - The app cancels all transfers, closes peer connections, revokes in-memory download URLs, clears file references, and removes the saved display name.
 - Files streamed into a folder chosen by the user are written with app-owned, collision-safe names and are deleted when leaving, alongside any `.part` file.
-- Once a user clicks **Save**, the browser may place an independent download outside the page's control. That downloaded copy cannot be deleted by JavaScript; the user must remove it from their device if required.
+- An automatic download is an independent file placed outside the page's control. That downloaded copy cannot be deleted by JavaScript; the user must remove it from their device if required.
 - No room or file payload is written to a server of ours. Public signaling relays carry and may retain connection metadata as described below. Browser-native download files and files the operating system has independently copied are outside page storage.
 
 Browsers do not permit a custom message in the close-tab warning, and JavaScript cannot guarantee asynchronous filesystem operations finish during a forced process termination or browser crash. Normal in-page exits await app-created file cleanup before navigating home.
@@ -132,7 +134,7 @@ Not claims: “safe files,” “works on any network,” “secure from the sen
 - File names lose path components, controls and leading dots; reserved Windows device names are prefixed; collisions are deduplicated.
 - `.exe`, `.dmg`, `.pkg`, `.app`, `.msi`, `.bat`, `.cmd`, `.sh`, `.command`, `.apk`, `.js`, `.jar`, `.scr`, `.ps1`, `.vbs`, `.lnk`, and suspicious double extensions receive a program warning.
 - A file offer is refused with a name over 200 characters; up to 500 files may be selected in one operation.
-- An integrity mismatch discards an in-memory result and never offers Save. Streaming receivers keep a visibly damaged `.part` rather than renaming it.
+- An integrity mismatch discards an in-memory result and never downloads it. Streaming receivers keep a visibly damaged `.part` rather than renaming it.
 - Folder-backed receives resume from the highest contiguous byte; in-memory receives cannot resume after reload because the page loses their buffer.
 
 ## Size, throughput, and device status
