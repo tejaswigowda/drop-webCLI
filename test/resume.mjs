@@ -94,13 +94,17 @@ try {
     const file = await handle.getFile();
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer()));
     const sha256 = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-    return { size: file.size, sha256 };
+    let partExists = true;
+    try { await directory.getFileHandle('resume-105MiB.bin.part'); }
+    catch (cause) { partExists = cause?.name !== 'NotFoundError'; }
+    return { size: file.size, sha256, partExists };
   }, verified.savedPath);
 
   const expectedHash = await sender.evaluate(() => [...window.drop.state.outgoing.values()][0]?.sha256);
   success = Boolean(verified && senderState && senderState.interrupted
     && output?.size === 105 * 1024 * 1024
-    && output.sha256 === expectedHash);
+    && output.sha256 === expectedHash
+    && output.partExists === false);
   console.log(`${success ? 'PASS' : 'FAIL'}  DR9 folder-backed 105 MiB transfer resumes after peer reconnect`,
     { bytes: verified?.bytes, resumed: senderState?.interrupted, output });
 } catch (cause) {

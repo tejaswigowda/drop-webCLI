@@ -6,7 +6,7 @@ import {
 } from './lib/core.js';
 
 const PINS = /*PINS*/{"trystero-nostr.js":{"version":"0.27.0","package":"@trystero-p2p/nostr","sha256":"d26013f7ecae563f4fcdbf7dece219cfdb5f2d3efc2caff32df9a768d5066fc6"},"qrcode.js":{"version":"1.5.2","package":"qrcode-generator","sha256":"065509cfd450f89dbffccc8e37d16f5cb03099aef7c36ab2a23d27611bd97b03"},"sha256.js":{"version":"2.0.1","package":"@noble/hashes","sha256":"d1cc9098f317cf4c5c1652090f680cd4303a9854e345845199ccdae64269c79e"}}/*END-PINS*/;
-const VERSION = '0.2.8';
+const VERSION = '0.2.9';
 const APP_DIR = (() => {
   const pathname = location.pathname;
   if (pathname.endsWith('/')) return pathname;
@@ -994,14 +994,26 @@ async function finalizePart(receive) {
     const extension = dot > 0 ? receive.saveName.slice(dot) : '';
     finalName = `${base} (${number})${extension}`;
   }
-  const final = await receive.directory.getFileHandle(finalName, { create: true });
   if (typeof receive.partHandle?.move === 'function') {
+    // Do not pre-create the destination: FileSystemFileHandle.move() requires it to be absent.
     await receive.partHandle.move(finalName);
   } else {
+    const final = await receive.directory.getFileHandle(finalName, { create: true });
     const file = await receive.partHandle.getFile();
     const output = await final.createWritable();
-    await file.stream().pipeTo(output);
+    try {
+      await file.stream().pipeTo(output);
+      await receive.directory.removeEntry(receive.partName);
+    } catch (cause) {
+      await receive.directory.removeEntry(finalName).catch(() => {});
+      throw cause;
+    }
+  }
+  try {
+    await receive.directory.getFileHandle(receive.partName);
     await receive.directory.removeEntry(receive.partName);
+  } catch (cause) {
+    if (cause?.name !== 'NotFoundError') throw cause;
   }
   receive.savedPath = finalName;
   receive.createdOutput = true;
