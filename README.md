@@ -6,7 +6,7 @@ This is not storage, a cloud locker, a mailbox, or â€œAirDrop for the internet.â
 
 ## Status
 
-`v0.2.1` is the room and bidirectional-transfer release, styled to match the rest of the webCLI family. The automated suite covers:
+`v0.2.3` is the room and bidirectional-transfer release, styled to match the rest of the webCLI family. The automated suite covers:
 
 - a 128-bit invite secret that appears only in the URL fragment;
 - different `drop-webCLI` topic/password derivation labels;
@@ -48,6 +48,19 @@ npm run vendor
 ```
 
 The page refuses to execute a vendored module whose bytes do not match the SHA-256 embedded in the app. It makes no script or asset request to a CDN.
+
+## Leaving and tab closure
+
+Closing an active room is destructive by design:
+
+- **Leave room** and the header **+** action require confirmation.
+- Closing, reloading, or navigating away from an active room triggers the browser's native tab-close confirmation.
+- The app cancels all transfers, closes peer connections, revokes in-memory download URLs, clears file references, and removes the saved display name.
+- Files streamed into a folder chosen by the user are written with app-owned, collision-safe names and are deleted when leaving, alongside any `.part` file.
+- Once a user clicks **Save**, the browser may place an independent download outside the page's control. That downloaded copy cannot be deleted by JavaScript; the user must remove it from their device if required.
+- No room or file payload is written to a server. Browser-native download files and files the operating system has independently copied are outside page storage.
+
+Browsers do not permit a custom message in the close-tab warning, and JavaScript cannot guarantee asynchronous filesystem operations finish during a forced process termination or browser crash. Normal in-page exits await app-created file cleanup before navigating home.
 
 ## How it works
 

@@ -6,7 +6,7 @@ import {
 } from './lib/core.js';
 
 const PINS = /*PINS*/{"trystero-nostr.js":{"version":"0.27.0","package":"@trystero-p2p/nostr","sha256":"d26013f7ecae563f4fcdbf7dece219cfdb5f2d3efc2caff32df9a768d5066fc6"},"qrcode.js":{"version":"1.5.2","package":"qrcode-generator","sha256":"065509cfd450f89dbffccc8e37d16f5cb03099aef7c36ab2a23d27611bd97b03"},"sha256.js":{"version":"2.0.1","package":"@noble/hashes","sha256":"d1cc9098f317cf4c5c1652090f680cd4303a9854e345845199ccdae64269c79e"}}/*END-PINS*/;
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 const APP_DIR = (() => {
   const pathname = location.pathname;
   if (pathname.endsWith('/')) return pathname;
@@ -341,6 +341,25 @@ async function onControl(message, context) {
       receive.chunks = [];
       renderIncoming();
     }
+    return;
+  }
+  if (message.type === 'cancel-all') {
+    for (const receive of state.incoming.values()) {
+      if (receive.peerId !== peerId || ['verified', 'failed', 'declined'].includes(receive.state)) continue;
+      receive.state = 'failed';
+      receive.message = message.reason || 'The sender left the room.';
+      receive.chunks = [];
+    }
+    for (const outgoing of state.outgoing.values()) {
+      const target = outgoing.targets.get(peerId);
+      if (target && !['verified', 'failed'].includes(target.state)) {
+        target.state = 'failed';
+        target.message = message.reason || 'The recipient left the room.';
+      }
+    }
+    renderIncoming();
+    renderOutgoing();
+    return;
   }
 }
 
@@ -677,16 +696,29 @@ function onIncomingDataChannel(pc, channel) {
 async function finalizePart(receive) {
   await receive.writer?.close();
   receive.writer = null;
-  const final = await receive.directory.getFileHandle(receive.saveName, { create: true });
+  let finalName = receive.saveName;
+  for (let number = 2; ; number++) {
+    try {
+      await receive.directory.getFileHandle(finalName);
+    } catch {
+      break;
+    }
+    const dot = receive.saveName.lastIndexOf('.');
+    const base = dot > 0 ? receive.saveName.slice(0, dot) : receive.saveName;
+    const extension = dot > 0 ? receive.saveName.slice(dot) : '';
+    finalName = `${base} (${number})${extension}`;
+  }
+  const final = await receive.directory.getFileHandle(finalName, { create: true });
   if (typeof receive.partHandle?.move === 'function') {
-    await receive.partHandle.move(receive.saveName);
+    await receive.partHandle.move(finalName);
   } else {
     const file = await receive.partHandle.getFile();
     const output = await final.createWritable();
     await file.stream().pipeTo(output);
     await receive.directory.removeEntry(receive.partName);
   }
-  receive.savedPath = receive.saveName;
+  receive.savedPath = finalName;
+  receive.createdOutput = true;
 }
 
 async function finishReceive(receive) {
@@ -850,15 +882,13 @@ function initializeEvents() {
   });
   $('#showQr').addEventListener('click', renderQr);
   $('#newRoom').addEventListener('click', () => $('#newRoomDialog').showModal());
-  $('#confirmNewRoom').addEventListener('click', () => {
-    state.cancelled = true;
-    try { state.room?.leave(); } catch {}
+  $('#confirmNewRoom').addEventListener('click', async () => {
+    await cleanupRoom();
     location.replace(location.pathname + location.search);
   });
   $('#leaveRoom').addEventListener('click', () => $('#leaveRoomDialog').showModal());
-  $('#confirmLeaveRoom').addEventListener('click', () => {
-    state.cancelled = true;
-    state.room?.leave();
+  $('#confirmLeaveRoom').addEventListener('click', async () => {
+    await cleanupRoom();
     history.replaceState(null, '', location.pathname + location.search);
     location.reload();
   });
@@ -873,9 +903,54 @@ function initializeEvents() {
   });
 }
 
-addEventListener('pagehide', () => {
+async function cleanupRoom({ notify = true } = {}) {
+  if (state.cancelled && !state.joined && !state.incoming.size && !state.outgoing.size) return;
   state.cancelled = true;
+  if (notify && state.action && state.room) {
+    try { await state.action.send({ type: 'cancel-all', reason: 'The participant left the room.' }); } catch {}
+  }
+  for (const receive of state.incoming.values()) {
+    if (receive.url) {
+      try { URL.revokeObjectURL(receive.url); } catch {}
+    }
+    receive.chunks = [];
+    try { await receive.writer?.abort(); } catch {}
+    if (receive.directory) {
+      try { await receive.directory.removeEntry(receive.partName); } catch {}
+      if (receive.createdOutput && receive.savedPath) {
+        try { await receive.directory.removeEntry(receive.savedPath); } catch {}
+      }
+    }
+  }
+  for (const outgoing of state.outgoing.values()) {
+    outgoing.source = null;
+    outgoing.targets.clear();
+  }
+  state.jobs.length = 0;
+  state.activeJobs.clear();
+  state.incoming.clear();
+  state.outgoing.clear();
+  state.peers.clear();
   try { state.room?.leave(); } catch {}
+  for (const pc of allPCs) {
+    try { pc.close(); } catch {}
+  }
+  allPCs.clear();
+  state.joined = false;
+  state.room = null;
+  state.action = null;
+  state.selfId = null;
+  localStorage.removeItem(SETTINGS_KEY);
+}
+
+addEventListener('beforeunload', (event) => {
+  if (!state.joined || state.cancelled) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+addEventListener('pagehide', () => {
+  void cleanupRoom({ notify: false });
 });
 
 window.drop = { state, allPCs, deriveRoom, executableWarning, sanitizeManifestNames, validateManifest, runConsole, loadVerified };

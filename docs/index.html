@@ -7,7 +7,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob:; style-src 'self'; connect-src 'self' wss: ws://localhost:* ws://127.0.0.1:*; img-src 'self' data:; worker-src 'self'; base-uri 'none'; form-action 'none'">
   <title>drop-webCLI</title>
   <meta name="description" content="Create a room and exchange SHA-256 verified files directly between browsers.">
-  <link rel="stylesheet" href="style.css?v=0.2.2">
+  <link rel="stylesheet" href="style.css?v=0.2.3">
 </head>
 <body>
   <header>
@@ -128,7 +128,7 @@
 
   <dialog id="newRoomDialog">
     <h2>Start a new room?</h2>
-    <p>This leaves the current room and discards all incomplete transfers. Any files already verified on this device remain available.</p>
+    <p>This leaves the current room and deletes all transfer data, including files written by this page. Downloaded copies already saved outside this page cannot be deleted.</p>
     <p class="dim">The room link will be removed from this page.</p>
     <form method="dialog">
       <button value="cancel">Stay in room</button>
@@ -138,13 +138,13 @@
 
   <dialog id="leaveRoomDialog">
     <h2>Leave this room?</h2>
-    <p>You will be disconnected from everyone in the room. Incomplete transfers will be discarded, but verified files already on this device remain available.</p>
+    <p>You will be disconnected from everyone in the room. All transfer data, including files written by this page, will be deleted. Downloaded copies already saved outside this page cannot be deleted.</p>
     <form method="dialog">
       <button value="cancel">Stay in room</button>
       <button id="confirmLeaveRoom" value="confirm" class="danger">Leave room</button>
     </form>
   </dialog>
 
-  <script type="module" src="app.js?v=0.2.2"></script>
+  <script type="module" src="app.js?v=0.2.3"></script>
 </body>
 </html>

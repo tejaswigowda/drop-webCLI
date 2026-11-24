@@ -135,6 +135,11 @@ try {
     .filter((url) => url.startsWith('ws:') || url.startsWith('wss:'))
     .every((url) => new URL(url).host === new URL(relay.url).host));
 
+  check('active room requests browser confirmation before tab close', await receiver.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return !window.dispatchEvent(event);
+  }));
+
   await receiver.click('#leaveRoom');
   await receiver.click('#leaveRoomDialog button[value="cancel"]');
   check('Leave room requires confirmation', await receiver.isVisible('#roomScreen')
