@@ -24,6 +24,7 @@
       Files go directly between room members.
     </span>
     <nav class="header-actions" aria-label="Application links">
+      <button id="leaveRoom" class="leave-room hidden" type="button">Leave room</button>
       <button id="newRoom" class="header-icon" type="button" aria-label="Start a new room" title="Start a new room">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       </button>
@@ -61,7 +62,6 @@
           <p class="eyebrow">Room</p>
           <h1>Exchange files</h1>
         </div>
-        <button id="leaveRoom">Leave room</button>
       </div>
 
       <div class="invite room-panel">
@@ -133,6 +133,15 @@
     <form method="dialog">
       <button value="cancel">Stay in room</button>
       <button id="confirmNewRoom" value="confirm" class="primary">Go home</button>
+    </form>
+  </dialog>
+
+  <dialog id="leaveRoomDialog">
+    <h2>Leave this room?</h2>
+    <p>You will be disconnected from everyone in the room. Incomplete transfers will be discarded, but verified files already on this device remain available.</p>
+    <form method="dialog">
+      <button value="cancel">Stay in room</button>
+      <button id="confirmLeaveRoom" value="confirm" class="danger">Leave room</button>
     </form>
   </dialog>
 

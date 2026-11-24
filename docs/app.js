@@ -90,6 +90,7 @@ function clearError() {
 function showRoom(on) {
   ui.start.classList.toggle('hidden', on);
   ui.room.classList.toggle('hidden', !on);
+  $('#leaveRoom').classList.toggle('hidden', !on);
 }
 
 function saveSettings() {
@@ -854,7 +855,8 @@ function initializeEvents() {
     try { state.room?.leave(); } catch {}
     location.replace(location.pathname + location.search);
   });
-  $('#leaveRoom').addEventListener('click', () => {
+  $('#leaveRoom').addEventListener('click', () => $('#leaveRoomDialog').showModal());
+  $('#confirmLeaveRoom').addEventListener('click', () => {
     state.cancelled = true;
     state.room?.leave();
     history.replaceState(null, '', location.pathname + location.search);

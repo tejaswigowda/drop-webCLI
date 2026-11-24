@@ -26,6 +26,8 @@ button:hover:not(:disabled) { border-color: var(--accent); background: var(--sur
 button:disabled { opacity: .46; cursor: not-allowed; }
 button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
 button.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
+button.danger { border-color: rgba(239, 68, 68, .8); background: rgba(185, 28, 28, .75); color: #fff; }
+button.danger:hover:not(:disabled) { border-color: var(--bad); background: #b91c1c; }
 button.large { min-height: 44px; padding-inline: 1.1rem; font-weight: 650; }
 input, select { border: 1px solid var(--line); border-radius: 6px; outline: none; background: #080a10; }
 input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(54, 101, 182, .2); }
@@ -50,6 +52,8 @@ header {
 .privacy-note { display: inline-flex; align-items: center; gap: .45rem; color: var(--ok); font-size: .82rem; }
 .privacy-note svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .header-actions { display: flex; align-items: center; gap: .45rem; margin-left: auto; }
+.leave-room { min-height: 42px; color: #fecaca; border-color: rgba(239, 68, 68, .45); background: rgba(185, 28, 28, .12); }
+.leave-room:hover { color: #fff; border-color: var(--bad); background: rgba(185, 28, 28, .35); }
 .header-icon { width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); color: var(--dim); text-decoration: none; }
 .header-icon:hover { color: var(--fg); border-color: var(--accent); background: var(--surface); }
 .header-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -142,6 +146,7 @@ dialog form::after { content: ""; display: block; clear: both; }
   .brand-mark { width: 24px; height: 24px; }
   .pill { display: none; }
   .header-actions { gap: .35rem; }
+  .leave-room { min-height: 36px; padding: .4rem .6rem; }
   .header-icon { width: 36px; height: 36px; }
   main { width: calc(100% - 1.25rem); margin-top: 1.4rem; }
   .start-card, .copy-row, .title-row { align-items: stretch; flex-wrap: wrap; }

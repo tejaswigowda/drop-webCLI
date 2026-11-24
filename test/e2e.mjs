@@ -135,6 +135,15 @@ try {
     .filter((url) => url.startsWith('ws:') || url.startsWith('wss:'))
     .every((url) => new URL(url).host === new URL(relay.url).host));
 
+  await receiver.click('#leaveRoom');
+  await receiver.click('#leaveRoomDialog button[value="cancel"]');
+  check('Leave room requires confirmation', await receiver.isVisible('#roomScreen')
+    && (await receiver.url()).includes('#k='));
+  await receiver.click('#leaveRoom');
+  await receiver.click('#confirmLeaveRoom');
+  await receiver.waitForSelector('#startScreen:not(.hidden)');
+  check('Confirmed Leave returns home without a fragment', await receiver.url() === `${origin}/`);
+
   await sender.click('#newRoom');
   await sender.click('#newRoomDialog button[value="cancel"]');
   check('New room action requires confirmation', await sender.isVisible('#roomScreen')
