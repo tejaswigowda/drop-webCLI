@@ -124,8 +124,9 @@ try {
   await third.goto(invite);
   await third.fill('#displayName', 'Mallory');
   await third.click('#createRoom');
-  check('two-person policy visibly refuses a third participant', await until(async () =>
-    /ROOM_FULL|two-person room/.test(await third.textContent('#errorBanner')), 20_000));
+  check('rooms visibly admit a third participant', await until(async () =>
+    /3 people/.test(await sender.textContent('#people'))
+      && /Mallory/.test(await sender.textContent('#people')), 20_000));
   await third.context().close();
 
   if (browserName === 'chromium' && !corrupt) {

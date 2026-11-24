@@ -6,7 +6,7 @@ import {
 } from './lib/core.js';
 
 const PINS = /*PINS*/{"trystero-nostr.js":{"version":"0.27.0","package":"@trystero-p2p/nostr","sha256":"d26013f7ecae563f4fcdbf7dece219cfdb5f2d3efc2caff32df9a768d5066fc6"},"qrcode.js":{"version":"1.5.2","package":"qrcode-generator","sha256":"065509cfd450f89dbffccc8e37d16f5cb03099aef7c36ab2a23d27611bd97b03"},"sha256.js":{"version":"2.0.1","package":"@noble/hashes","sha256":"d1cc9098f317cf4c5c1652090f680cd4303a9854e345845199ccdae64269c79e"}}/*END-PINS*/;
-const VERSION = '0.2.7';
+const VERSION = '0.2.8';
 const APP_DIR = (() => {
   const pathname = location.pathname;
   if (pathname.endsWith('/')) return pathname;
@@ -270,7 +270,7 @@ function diagnoseConnection(pc) {
 
 function onRoomError(event) {
   if (event?.code === 'room-full') {
-    error('ROOM_FULL: this is a two-person room, and it already has two participants. Ask the current participants for a new room link.');
+    error('ROOM_FULL: this room has reached its visible 10-participant limit. Ask the participants for a new room link.');
     return;
   }
   if (event?.code !== 'peer-connect-failed') {
@@ -327,7 +327,7 @@ async function connectRoom() {
   state.room = library.joinRoom({
     appId: APP_ID,
     password,
-    maxUsers: 2,
+    maxUsers: 10,
     identity: 'none',
     relayConfig: { urls: reachable, warnOnRelayFailure: false },
     rtcConfig: { iceServers: DEV.localIce ? [] : [{ urls: DEFAULT_STUN }] },
@@ -351,19 +351,30 @@ async function connectRoom() {
 async function enterRoom(create = false) {
   clearError();
   saveSettings();
-  if (!(await ensureDisclosure())) return;
-  if (create) {
-    const newInvite = makeInviteSecret();
-    state.secret = newInvite.secret;
-    state.expiresAt = newInvite.expiresAt;
-    state.roomCreatedAt = Date.now();
+  const button = $('#createRoom');
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = create ? 'Creating room…' : 'Joining room…';
+  button.setAttribute('aria-busy', 'true');
+  try {
+    if (!(await ensureDisclosure())) return;
+    if (create) {
+      const newInvite = makeInviteSecret();
+      state.secret = newInvite.secret;
+      state.expiresAt = newInvite.expiresAt;
+      state.roomCreatedAt = Date.now();
+    }
+    if (!state.secret) {
+      error('This invite link is invalid. Ask for a new room link.');
+      return;
+    }
+    await connectRoom();
+    setInterval(tick, 1000);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+    button.removeAttribute('aria-busy');
   }
-  if (!state.secret) {
-    error('This invite link is invalid. Ask for a new room link.');
-    return;
-  }
-  await connectRoom();
-  setInterval(tick, 1000);
 }
 
 function send(peerId, message) {
@@ -569,10 +580,10 @@ function renderPeople() {
   ui.sendTo.append(new Option('Everyone', 'all'));
   const self = element('div', 'person self');
   self.append(element('strong', '', `${myName()} (you)`),
-    element('span', 'dim', `${state.selfId?.slice(0, 8) || 'joining'} · ${state.peers.size + 1}/2 people`));
+    element('span', 'dim', `${state.selfId?.slice(0, 8) || 'joining'} · ${state.peers.size + 1} people · 10 max`));
   ui.people.append(self);
   if (!state.peers.size) {
-    ui.people.append(element('span', 'dim', 'Invite one person. Rooms are limited to two participants.'));
+    ui.people.append(element('span', 'dim', 'Invite people. Rooms are limited to 10 participants.'));
     return;
   }
   for (const peer of state.peers.values()) {

@@ -1,22 +1,22 @@
 # drop-webCLI
 
-Create a temporary two-person room, send its link, and exchange files with the person who joins. Both people can send and receive, and each received file requires its own explicit Accept. The sender and receiver both compute SHA-256 incrementally, compare the result, and show the first eight characters for an out-of-band check.
+Create a temporary multi-person room, send its link, and exchange files with the people who join. Everyone can send and receive, and each received file requires its own explicit Accept. The sender and receiver both compute SHA-256 incrementally, compare the result, and show the first eight characters for an out-of-band check.
 
 This is not storage, a cloud locker, a mailbox, or “AirDrop for the internet.” Both browsers must be open at the same time. There is no nearby discovery.
 
 **It does not break the static-page boundary. It trades storage for synchrony.** drop-webCLI keeps both parties present instead of storing a payload. box-webCLI is deliberately the opposite architecture: stored content and token-based access.
 
 **Live app:** https://drop.webcli.app/
-**Status:** v0.2.7; functional for current desktop testing, with browser-size ceilings, throughput, and the wider device matrix still explicitly pending below.
+**Status:** v0.2.8; functional for current desktop testing, with browser-size ceilings, throughput, and the wider device matrix still explicitly pending below.
 
 ## Status
 
-`v0.2.7` enforces the two-person, 60-minute room-link policy, adds folder-backed resume, keeps supported displays awake during incoming transfers, and automatically downloads verified in-memory files. The automated suite covers:
+`v0.2.8` uses a visible 10-participant limit and 60-minute room links, adds folder-backed resume, keeps supported displays awake during incoming transfers, and automatically downloads verified in-memory files. The automated suite covers:
 
 - a 128-bit invite secret that appears only in the URL fragment;
 - different `drop-webCLI` topic/password derivation labels;
 - room invitation and membership;
-- two-person room policy and refusal of a third participant;
+- a visible 10-person room policy;
 - a room-topic key bound to the invite's expiry;
 - bidirectional transfer between people in the same room;
 - explicit per-file receiver acceptance;
@@ -40,7 +40,7 @@ npm install
 npm start
 ```
 
-Open the live app or `http://localhost:8080/`, enter a display name, and select **Create room**. Copy the room link and open it in another browser profile or device. The link is valid for 60 minutes. The invited person chooses a name and selects **Join room**. A room accepts at most two participants total; a third receives `ROOM_FULL`.
+Open the live app or `http://localhost:8080/`, enter a display name, and select **Create room**. Copy the room link and open it in another browser profile or device. The link is valid for 60 minutes. Invited people choose names and select **Join room**. A room accepts at most 10 participants total; an eleventh receives `ROOM_FULL`.
 
 On the receiving side, every offered file remains independent: review its sender, name, size, executable warning, and stable per-session identifier, then choose **Accept**, **Accept to folder**, or **Decline**. The static server receives only page requests; it does not receive the fragment secret or file bytes.
 
@@ -102,7 +102,7 @@ Browsers do not permit a custom message in the close-tab warning, and JavaScript
 
 Only folder-backed transfers resume. A receiver retains the highest contiguous byte offset, closes the current file channel after an interruption, and sends that offset to the sender. The sender seeks to that offset and opens a fresh channel. The final whole-file SHA-256 still proves the combined transfer. In-memory receives lose their buffer and do not resume.
 
-The room policy is two participants total. A file sender sees the other participant's display name, stable session identifier, count, and path before sending. The link is a capability: **the room link is a key**. Forwarding it before expiry forwards the ability to attempt to join, and display names are unverified.
+The room policy is 10 participants total, shown in the room UI. A file sender sees every participant's display name, stable session identifier, count, and path before sending. The link is a capability: **the room link is a key**. Forwarding it before expiry forwards the ability to attempt to join, and display names are unverified.
 
 ## Privacy and egress
 

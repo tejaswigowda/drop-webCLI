@@ -7,7 +7,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob:; style-src 'self'; connect-src 'self' wss: ws://localhost:* ws://127.0.0.1:*; img-src 'self' data:; worker-src 'self'; base-uri 'none'; form-action 'none'">
   <title>drop-webCLI</title>
   <meta name="description" content="Create a room and exchange SHA-256 verified files directly between browsers.">
-  <link rel="stylesheet" href="style.css?v=0.2.7">
+  <link rel="stylesheet" href="style.css?v=0.2.8">
 </head>
 <body>
   <header>
@@ -68,7 +68,7 @@
       </div>
 
       <div class="invite room-panel">
-        <label for="inviteLink">Invite one person · link expires in 60 minutes</label>
+        <label for="inviteLink">Invite people · up to 10 participants · link expires in 60 minutes</label>
         <div class="copy-row"><input id="inviteLink" readonly><button id="copyLink" class="primary">Copy link</button><button id="showQr">QR</button></div>
         <p class="keep">Keep this tab open while files are being exchanged.</p>
       </div>
@@ -119,7 +119,7 @@
     <form method="dialog">
       <h2>People in this room can see your IP address</h2>
       <p>Joining uses public Nostr relays for encrypted WebRTC setup. Relays store and rebroadcast connection metadata, including IP addresses. File contents never pass through the relays.</p>
-      <p>Only continue if you expect the one other person in this two-person room. The link is a key: anyone holding it before expiry can try to join. Display names are not verified.</p>
+      <p>Only continue if you expect the people in this room. The link is a key: anyone holding it before expiry can try to join. Display names are not verified. Rooms allow up to 10 participants.</p>
       <button value="decline">Cancel</button>
       <button id="noticeAccept" value="accept" class="primary">Continue</button>
     </form>
@@ -163,6 +163,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="app.js?v=0.2.7"></script>
+  <script type="module" src="app.js?v=0.2.8"></script>
 </body>
 </html>
