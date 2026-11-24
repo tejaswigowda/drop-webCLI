@@ -15,8 +15,10 @@ const server = spawn(process.execPath, ['server.js'], {
 const directory = await mkdtemp(path.join(os.tmpdir(), 'drop-webcli-'));
 const first = path.join(directory, 'hello.txt');
 const second = path.join(directory, 'bytes.bin');
+const reply = path.join(directory, 'reply.txt');
 await writeFile(first, 'browser-to-browser integrity check\n'.repeat(2000));
 await writeFile(second, Buffer.alloc(700_000, 0x5a));
+await writeFile(reply, 'The receiver can also send files in the same room.\n'.repeat(100));
 const results = [];
 const browserName = process.env.BROWSER || 'chromium';
 const corrupt = process.env.CORRUPT === '1';
@@ -63,34 +65,54 @@ try {
   const sender = await open({ flipFirstByte: corrupt });
   sender.on('request', (request) => requests.push(request.url()));
   await sender.goto(origin);
-  await sender.fill('#senderName', 'Alice');
-  await sender.setInputFiles('#fileInput', [first, second]);
-  await sender.waitForSelector('#inviteBox:not(.hidden)', { timeout: 30_000 });
+  await sender.fill('#displayName', 'Alice');
+  await sender.click('#createRoom');
+  await sender.waitForSelector('#roomScreen:not(.hidden)', { timeout: 30_000 });
   const invite = await sender.inputValue('#inviteLink');
   check('DP1 invite secret lives in fragment', /#k=[-_A-Za-z0-9]{22}$/.test(invite), invite);
-  check('DP7 no manifest is shown before preparation finishes', await sender.locator('#senderFiles .file').count() === 2);
 
   const receiver = await open();
   receiver.on('request', (request) => requests.push(request.url()));
   await receiver.goto(invite);
-  await receiver.waitForSelector('#acceptActions:not(.hidden)', { timeout: 45_000 });
-  check('DP14 explicit Accept is required', /hello\.txt/.test(await receiver.textContent('#incomingFiles')));
-  check('DP19 sender name is labelled unverified', /unverified/.test(await receiver.textContent('#receiver')));
-  await receiver.click('#acceptMemory');
+  await receiver.fill('#displayName', 'Bob');
+  await receiver.click('#createRoom');
+  await receiver.waitForSelector('#roomScreen:not(.hidden)', { timeout: 45_000 });
+  check('room invite opens directly in the shared room',
+    await until(async () => /Alice/.test(await receiver.textContent('#people')), 10_000));
+  await sender.waitForFunction(() => document.querySelector('#people')?.textContent.includes('Bob'));
+
+  await sender.setInputFiles('#fileInput', [first, second]);
+  await receiver.waitForSelector('[data-action^="accept-"]', { timeout: 45_000 });
+  check('DP7 hashes are offered only after preparation',
+    await until(async () => await receiver.locator('#incoming .file').count() === 2, 10_000));
+  check('DP14 each file requires explicit Accept', await receiver.locator('[data-action^="accept-"]').count() === 2);
+  check('DP19 sender name is labelled unverified', /unverified/.test(await receiver.textContent('#incoming')));
+  const acceptButtons = receiver.locator('[data-action^="accept-"]');
+  await acceptButtons.first().click();
+  check('accepting one file does not accept the other',
+    await until(async () => await receiver.locator('[data-action^="accept-"]').count() === 1, 10_000));
+  await receiver.locator('[data-action^="accept-"]').click();
 
   if (corrupt) {
-    const receiverFailed = await until(async () => (await receiver.locator('#incomingFiles .status.bad').count()) === 2, 45_000);
-    const senderFailed = await until(async () => (await sender.locator('#receivers').textContent()).match(/mismatch ✗/g)?.length === 2, 45_000);
+    const receiverFailed = await until(async () => (await receiver.locator('#incoming .status.bad').count()) === 2, 45_000);
+    const senderFailed = await until(async () => (await sender.locator('#outgoing').textContent()).match(/mismatch ✗/g)?.length === 2, 45_000);
     check('DP9 a transit mismatch is never presented as a file', receiverFailed && senderFailed
       && await receiver.getByRole('button', { name: 'Save' }).count() === 0
-      && /discarded/.test(await receiver.textContent('#incomingFiles')),
-    `${await receiver.textContent('#incomingFiles')} | ${await sender.textContent('#receivers')} | saves ${await receiver.getByRole('button', { name: 'Save' }).count()}`);
+      && /discarded/.test(await receiver.textContent('#incoming')),
+    `${await receiver.textContent('#incoming')} | ${await sender.textContent('#outgoing')} | saves ${await receiver.getByRole('button', { name: 'Save' }).count()}`);
   } else {
-    const receiverVerified = await until(async () => (await receiver.locator('#incomingFiles .status.ok').count()) === 2, 45_000);
-    const senderVerified = await until(async () => (await sender.locator('#receivers').textContent()).match(/verified ✓/g)?.length === 2, 45_000);
+    const receiverVerified = await until(async () => (await receiver.locator('#incoming .status.ok').count()) === 2, 45_000);
+    const senderVerified = await until(async () => (await sender.locator('#outgoing').textContent()).match(/verified ✓/g)?.length === 2, 45_000);
     check(`DP6–DP10 ${browserName} chunks transfer and both sides verify SHA-256`, receiverVerified && senderVerified,
-      `${await receiver.textContent('#incomingFiles')} | ${await sender.textContent('#receivers')} | ${await sender.textContent('#consoleOut')} | ${await receiver.textContent('#consoleOut')}`);
+      `${await receiver.textContent('#incoming')} | ${await sender.textContent('#outgoing')}`);
     check('DP15 received content has Save buttons and never auto-downloads', await receiver.getByRole('button', { name: 'Save' }).count() === 2);
+
+    await receiver.setInputFiles('#fileInput', reply);
+    await sender.waitForSelector('[data-action^="accept-"]', { timeout: 30_000 });
+    check('the receiver can send back to the same room', /reply\.txt/.test(await sender.textContent('#incoming')));
+    await sender.locator('[data-action^="accept-"]').click();
+    check('bidirectional room transfer verifies on both sides', await until(async () =>
+      /verified ✓/.test(await sender.textContent('#incoming')) && /verified ✓/.test(await receiver.textContent('#outgoing')), 45_000));
   }
 
   const secret = invite.split('#k=')[1];

@@ -1,16 +1,18 @@
 # drop-webCLI
 
-Send a link. Choose files. Keep the browser open while accepted receivers get each file directly over WebRTC. The sender and receiver both compute SHA-256 incrementally, compare the result, and show the first eight characters for an out-of-band check.
+Create a room, send its link, and exchange files with the people who join. Everyone can send and receive, and each received file requires its own explicit Accept. The sender and receiver both compute SHA-256 incrementally, compare the result, and show the first eight characters for an out-of-band check.
 
 This is not storage, a cloud locker, a mailbox, or “AirDrop for the internet.” Both browsers must be open at the same time. There is no nearby discovery, and nothing remains on a service when the sender closes the tab.
 
 ## Status
 
-`v0.1.0` is the implemented transfer-path release. The automated suite covers:
+`v0.2.0` is the room and bidirectional-transfer release. The automated suite covers:
 
 - a 128-bit invite secret that appears only in the URL fragment;
 - different `drop-webCLI` topic/password derivation labels;
-- explicit receiver acceptance;
+- room invitation and membership;
+- bidirectional transfer between people in the same room;
+- explicit per-file receiver acceptance;
 - preparation-time and receive-time incremental SHA-256;
 - dedicated ordered, reliable 16 KiB data channels with 4 MiB / 1 MiB backpressure watermarks;
 - byte-accurate progress, filename sanitization, executable warnings, and manifest limits;
@@ -26,7 +28,7 @@ npm install
 npm start
 ```
 
-Open `http://localhost:8080/`, choose files, copy the generated link, and open it in another browser profile or device that can reach the page. The static server only serves the application; it does not receive file bytes or the fragment secret.
+Open `http://localhost:8080/`, enter a display name, create a room, copy the room link, and open it in another browser profile or device that can reach the page. The invited person chooses a name and joins the same room. Anyone can select **Everyone** or a specific person, then send files. The static server only receives page requests; it does not receive file bytes or the fragment secret.
 
 Run the checks:
 
@@ -47,12 +49,12 @@ The page refuses to execute a vendored module whose bytes do not match the SHA-2
 1. The page creates a 128-bit secret in `#k=…`. Browsers do not include URL fragments in HTTP requests.
 2. HKDF and a SHA-256 topic derivation isolate drop links from rtc-webCLI rooms.
 3. Trystero over public Nostr relays exchanges encrypted WebRTC setup information. Cloudflare STUN can reveal candidate addresses needed for a direct connection.
-4. A manifest lists file id, original name, size, type, and SHA-256. No file data is sent before the receiver accepts.
+4. Each outgoing file becomes an independent offer containing its id, original name, size, type, and SHA-256. No file data is sent before the receiver accepts that specific file.
 5. Each accepted file gets a dedicated `RTCDataChannel`. The sender pauses at 4 MiB buffered and resumes at 1 MiB.
 6. Both sides hash while streaming. A received file is not complete, downloadable, or moved from `.part` until the hashes match.
 7. Browsers with `showDirectoryPicker` stream to disk. Other browsers assemble verified files in memory and enforce the configured browser ceiling.
 
-The sender sends once for every receiver. At most three receiver transfers run at once; additional receivers queue.
+Each sender sends once for every recipient they selected. At most three transfers run at once per browser; additional transfers queue.
 
 ## Privacy and egress
 
@@ -78,7 +80,7 @@ Not claims: “safe files,” “works on any network,” “secure from the sen
 
 ## Receiving safely
 
-- The sender's display name is self-asserted and unverified.
+- Every person's display name is self-asserted and unverified.
 - Nothing transfers before **Accept**.
 - Nothing opens or previews automatically.
 - File names lose path components, controls and leading dots; reserved Windows device names are prefixed; collisions are deduplicated.
@@ -124,8 +126,8 @@ The hidden console offers `/peers`, `/path`, `/diag`, `/relays`, `/egress`, `/ha
 - [FilePizza](https://file.pizza/) — peer-to-peer file transfer by link.
 - Snapdrop / [PairDrop](https://pairdrop.net/) — local-network-friendly browser transfer.
 
-drop-webCLI differs by making the egress, consent boundary, named failures, dependency hashes, measured limits, and sender/receiver SHA-256 visible before making capability claims.
+drop-webCLI differs by making the egress, per-file consent boundary, named failures, dependency hashes, measured limits, and sender/receiver SHA-256 visible before making capability claims.
 
 ## Not built in v1
 
-Resume after interruption; receiver-to-sender transfer; folders; text/clipboard transfer; mailbox or sender-offline mode; nearby discovery; or a shared package across webCLI repositories. A transfer over 1 GB that fails mid-way is the trigger to reconsider resume. Sender-offline mode would require storage and therefore is never part of this tool.
+Resume after interruption; folders; text/clipboard transfer; mailbox or sender-offline mode; nearby discovery; or a shared package across webCLI repositories. A transfer over 1 GB that fails mid-way is the trigger to reconsider resume. Sender-offline mode would require storage and therefore is never part of this tool.

@@ -6,7 +6,7 @@
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob:; style-src 'self'; connect-src 'self' wss: ws://localhost:* ws://127.0.0.1:*; img-src 'self' data:; worker-src 'self'; base-uri 'none'; form-action 'none'">
   <title>drop-webCLI</title>
-  <meta name="description" content="Send files directly between browsers. Both tabs stay open, and every file is SHA-256 verified.">
+  <meta name="description" content="Create a room and exchange SHA-256 verified files directly between browsers.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,52 +18,62 @@
   <main>
     <section id="errorBanner" class="banner bad hidden" role="alert"></section>
 
-    <section id="senderStart" class="screen">
-      <h1>Send files by link</h1>
-      <p class="lede">The files go from this browser to the receivers who accept them. Keep this tab open.</p>
-      <label id="dropZone" class="drop-zone">
-        <input id="fileInput" type="file" multiple>
-        <strong>Choose files to send</strong>
-        <span>or drop them here</span>
-      </label>
-      <div class="small">
+    <section id="startScreen" class="screen">
+      <p class="eyebrow">Private, temporary room</p>
+      <h1>Invite people. Exchange files.</h1>
+      <p class="lede">Everyone in the room can send files to everyone else. Each received file still requires an explicit Accept.</p>
+      <div class="card start-card">
         <label class="field">Your name (unverified)
-          <input id="senderName" type="text" maxlength="24" autocomplete="name" placeholder="Alice">
+          <input id="displayName" type="text" maxlength="24" autocomplete="name" placeholder="Alice">
         </label>
+        <button id="createRoom" class="primary large">Create room</button>
       </div>
+      <p class="hash-note">Rooms exist only while someone is in them. No files are stored by a server.</p>
     </section>
 
-    <section id="senderRoom" class="screen hidden">
+    <section id="roomScreen" class="screen hidden">
       <div class="title-row">
         <div>
-          <h1>Files ready to send</h1>
-          <p class="dim">Nothing is sent until a receiver accepts.</p>
+          <p class="eyebrow">Room</p>
+          <h1>Exchange files</h1>
         </div>
+        <button id="leaveRoom">Leave room</button>
       </div>
-      <div id="preparing" class="banner info hidden"></div>
-      <div id="inviteBox" class="invite hidden">
-        <label for="inviteLink">Send this link</label>
-        <div class="copy-row"><input id="inviteLink" readonly><button id="copyLink" class="primary">Copy link</button><button id="showQr">QR</button></div>
-        <p class="keep">Keep this tab open until everyone has their files.</p>
-      </div>
-      <div id="senderFiles" class="file-list"></div>
-      <h2>Receivers</h2>
-      <div id="receivers" class="empty">No receivers yet.</div>
-    </section>
 
-    <section id="receiver" class="screen hidden">
-      <p class="eyebrow">Incoming files</p>
-      <h1><span id="incomingName">Someone</span> wants to send files</h1>
-      <p class="dim">The sender's name is self-asserted and unverified.</p>
-      <div id="incomingFiles" class="file-list"></div>
-      <div id="incomingWarning" class="banner warn hidden"></div>
-      <p class="hash-note">After transfer, ask the sender to read the first 8 characters of each SHA-256 out loud to compare.</p>
-      <div id="acceptActions" class="actions">
-        <button id="decline">Decline</button>
-        <button id="acceptMemory" class="primary">Accept</button>
-        <button id="acceptFolder" class="primary hidden">Accept and choose folder</button>
+      <div class="invite">
+        <label for="inviteLink">Invite people to this room</label>
+        <div class="copy-row"><input id="inviteLink" readonly><button id="copyLink" class="primary">Copy link</button><button id="showQr">QR</button></div>
+        <p class="keep">Keep this tab open while files are being exchanged.</p>
       </div>
-      <div id="receiverStatus"></div>
+
+      <h2>People in this room</h2>
+      <div id="people" class="people-list empty">You are here. Invite someone to start.</div>
+
+      <section class="send-panel">
+        <div class="title-row">
+          <h2>Send files</h2>
+          <label class="recipient-select">To
+            <select id="sendTo"><option value="all">Everyone</option></select>
+          </label>
+        </div>
+        <label id="dropZone" class="drop-zone compact">
+          <input id="fileInput" type="file" multiple>
+          <strong>Choose files to send</strong>
+          <span>or drop them here</span>
+        </label>
+        <div id="preparing" class="banner info hidden"></div>
+      </section>
+
+      <div class="transfer-columns">
+        <section>
+          <h2>Incoming files</h2>
+          <div id="incoming" class="file-list empty">No incoming files.</div>
+        </section>
+        <section>
+          <h2>Outgoing files</h2>
+          <div id="outgoing" class="file-list empty">No outgoing files.</div>
+        </section>
+      </div>
     </section>
 
     <section id="consolePanel" class="console hidden" aria-label="Console">
@@ -78,16 +88,16 @@
 
   <dialog id="notice">
     <form method="dialog">
-      <h2>People in this transfer can see your IP address</h2>
-      <p>Joining uses public Nostr relays for encrypted WebRTC setup. File bytes go directly to accepted receivers through the connection. A relay and STUN server still see network metadata such as IP addresses.</p>
-      <p>Only continue if you expect the person on the other end. The file sender's name is not verified.</p>
+      <h2>People in this room can see your IP address</h2>
+      <p>Joining uses public Nostr relays for encrypted WebRTC setup. Accepted files go directly to their receiver through the connection. A relay and STUN server still see network metadata such as IP addresses.</p>
+      <p>Only continue if you expect the people in this room. Display names are not verified.</p>
       <button value="decline">Cancel</button>
       <button id="noticeAccept" value="accept" class="primary">Continue</button>
     </form>
   </dialog>
 
   <dialog id="qrDialog">
-    <canvas id="qrCanvas" aria-label="QR code for the invite link"></canvas>
+    <canvas id="qrCanvas" aria-label="QR code for the room invite"></canvas>
     <p class="mono wrap" id="qrText"></p>
     <form method="dialog"><button>Close</button></form>
   </dialog>

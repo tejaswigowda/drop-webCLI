@@ -21,6 +21,7 @@ button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .48; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); }
 button.quiet { color: var(--dim); background: transparent; }
+button.large { min-height: 46px; padding-inline: 1.2rem; }
 input[type="text"], input:not([type]) { width: 100%; border: 1px solid var(--line); border-radius: 7px; background: #080a10; padding: .6rem .7rem; }
 header { height: 64px; display: flex; align-items: center; gap: 1rem; padding: 0 max(1rem, calc((100vw - 860px) / 2)); border-bottom: 1px solid var(--line); background: var(--panel); }
 .brand { font-weight: 750; font-size: 1.2rem; letter-spacing: -.03em; }
@@ -40,6 +41,19 @@ p { margin: .4rem 0 1rem; }
 .drop-zone span { color: var(--dim); }
 .drop-zone input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .field { display: grid; gap: .35rem; max-width: 360px; font-size: .85rem; }
+.card { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 1.2rem; }
+.start-card { max-width: 520px; display: flex; align-items: end; gap: 1rem; margin-top: 1.5rem; }
+.start-card .field { flex: 1; }
+.people-list { display: grid; gap: .5rem; }
+.person { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .65rem; padding: .7rem .8rem; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.person span { margin-left: auto; font-size: .8rem; }
+.send-panel { margin-top: 1.5rem; }
+.recipient-select { display: flex; align-items: center; gap: .45rem; color: var(--dim); font-size: .85rem; }
+.recipient-select select { min-width: 130px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); padding: .4rem; }
+.transfer-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; }
+.drop-zone.compact { min-height: 130px; margin: .8rem 0; }
+.compact-actions { margin-top: .65rem; }
+.compact-actions button { font-size: .85rem; }
 .title-row, .copy-row, .actions, .receiver-row { display: flex; align-items: center; gap: .65rem; }
 .title-row > :last-child { margin-left: auto; }
 .invite { padding: 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
@@ -89,4 +103,8 @@ dialog form::after { content: ""; display: block; clear: both; }
   .copy-row input { width: 100%; flex-basis: 100%; }
   .actions button { flex: 1; }
   .drop-zone { min-height: 210px; }
+  .start-card { align-items: stretch; flex-direction: column; }
+  .start-card button { width: 100%; }
+  .transfer-columns { grid-template-columns: 1fr; }
+  .person span { margin-left: 0; }
 }

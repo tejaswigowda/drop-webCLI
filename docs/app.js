@@ -6,7 +6,7 @@ import {
 } from './lib/core.js';
 
 const PINS = /*PINS*/{"trystero-nostr.js":{"version":"0.27.0","package":"@trystero-p2p/nostr","sha256":"d26013f7ecae563f4fcdbf7dece219cfdb5f2d3efc2caff32df9a768d5066fc6"},"qrcode.js":{"version":"1.5.2","package":"qrcode-generator","sha256":"065509cfd450f89dbffccc8e37d16f5cb03099aef7c36ab2a23d27611bd97b03"},"sha256.js":{"version":"2.0.1","package":"@noble/hashes","sha256":"d1cc9098f317cf4c5c1652090f680cd4303a9854e345845199ccdae64269c79e"}}/*END-PINS*/;
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const APP_DIR = (() => {
   const pathname = location.pathname;
   if (pathname.endsWith('/')) return pathname;
@@ -21,52 +21,52 @@ const DEV = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)
   : {};
 const MEMORY_LIMIT = Number(DEV.memoryLimit) || DEFAULT_MEMORY_LIMIT;
 const ACTIVE_RELAYS = Array.isArray(DEV.relays) && DEV.relays.length ? DEV.relays : RELAYS;
-
 const $ = (selector) => document.querySelector(selector);
 const ui = {
-  error: $('#errorBanner'), senderStart: $('#senderStart'), senderRoom: $('#senderRoom'),
-  receiver: $('#receiver'), fileInput: $('#fileInput'), dropZone: $('#dropZone'),
-  senderName: $('#senderName'), preparing: $('#preparing'), inviteBox: $('#inviteBox'),
-  inviteLink: $('#inviteLink'), senderFiles: $('#senderFiles'), receivers: $('#receivers'),
-  incomingName: $('#incomingName'), incomingFiles: $('#incomingFiles'),
-  incomingWarning: $('#incomingWarning'), acceptActions: $('#acceptActions'),
-  receiverStatus: $('#receiverStatus'), consolePanel: $('#consolePanel'), consoleOut: $('#consoleOut'),
-  consoleIn: $('#consoleIn'), notice: $('#notice'), qrDialog: $('#qrDialog'),
+  error: $('#errorBanner'), start: $('#startScreen'), room: $('#roomScreen'),
+  displayName: $('#displayName'), inviteLink: $('#inviteLink'), people: $('#people'),
+  sendTo: $('#sendTo'), fileInput: $('#fileInput'), dropZone: $('#dropZone'),
+  preparing: $('#preparing'), incoming: $('#incoming'), outgoing: $('#outgoing'),
+  consolePanel: $('#consolePanel'), consoleOut: $('#consoleOut'), consoleIn: $('#consoleIn'),
+  notice: $('#notice'), qrDialog: $('#qrDialog'),
 };
 const settings = (() => {
   try { return { name: '', ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') }; }
   catch { return { name: '' }; }
 })();
-ui.senderName.value = settings.name;
+ui.displayName.value = settings.name;
 
 const state = {
-  role: null,
   room: null,
   action: null,
   selfId: null,
   secret: parseInvite(location.hash),
-  lib: null,
   sha256: null,
-  preparedFiles: [],
-  manifest: null,
-  senderName: '',
-  incoming: null,
-  receivers: new Map(),
-  receive: new Map(),
-  queue: [],
-  active: new Set(),
-  cancelled: false,
-  senderPeerId: null,
-  directory: null,
   joined: false,
-  acceptedSignature: null,
+  peers: new Map(),
+  incoming: new Map(),
+  outgoing: new Map(),
+  jobs: [],
+  activeJobs: new Set(),
+  cancelled: false,
 };
 const allPCs = new Set();
 const observedSockets = new Set();
 const corruptedTransfers = new Set();
 const libCache = {};
 const consoleLines = [];
-let saveTimer;
+
+const myName = () => ui.displayName.value.trim().slice(0, 24)
+  || `Guest ${state.selfId ? state.selfId.slice(0, 4) : '...'}`;
+const incomingKey = (peerId, fileId) => `${peerId}:${fileId}`;
+const peerName = (peerId) => state.peers.get(peerId)?.name || `Peer ${peerId.slice(0, 4)}`;
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
 
 function log(message, kind = '') {
   const line = `[${new Date().toLocaleTimeString()}] ${kind ? `${kind.toUpperCase()}: ` : ''}${message}`;
@@ -87,27 +87,14 @@ function clearError() {
   ui.error.textContent = '';
 }
 
-function element(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text != null) node.textContent = text;
-  return node;
-}
-
-function show(sender) {
-  ui.senderStart.classList.toggle('hidden', sender !== 'start');
-  ui.senderRoom.classList.toggle('hidden', sender !== 'room');
-  ui.receiver.classList.toggle('hidden', sender !== 'receiver');
+function showRoom(on) {
+  ui.start.classList.toggle('hidden', on);
+  ui.room.classList.toggle('hidden', !on);
 }
 
 function saveSettings() {
-  settings.name = ui.senderName.value.trim().slice(0, 24);
+  settings.name = ui.displayName.value.trim().slice(0, 24);
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-}
-
-function friendlyName() {
-  const supplied = ui.senderName.value.trim().slice(0, 24);
-  return supplied || `Guest ${state.selfId ? state.selfId.slice(0, 4) : '...'}`;
 }
 
 async function loadVerified(file) {
@@ -118,9 +105,7 @@ async function loadVerified(file) {
   if (!response.ok) throw new Error(`Could not load lib/${file} (${response.status}).`);
   const bytes = new Uint8Array(await response.arrayBuffer());
   const actual = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
-  if (actual !== pin.sha256) {
-    throw new Error(`lib/${file} failed its SHA-256 pin check. It will not run.`);
-  }
+  if (actual !== pin.sha256) throw new Error(`lib/${file} failed its SHA-256 pin check. It will not run.`);
   const url = URL.createObjectURL(new Blob([bytes], { type: 'text/javascript' }));
   try { libCache[file] = await import(url); }
   finally { URL.revokeObjectURL(url); }
@@ -140,26 +125,22 @@ if (NativeWebSocket) {
 class TrackedPC extends RTCPeerConnection {
   constructor(config) {
     super(config);
-    this.trackedBorn = Date.now();
     allPCs.add(this);
     this.addEventListener('datachannel', (event) => onIncomingDataChannel(this, event.channel));
     this.addEventListener('connectionstatechange', () => {
       if (this.connectionState === 'closed') allPCs.delete(this);
-      if (['failed', 'disconnected', 'closed'].includes(this.connectionState)) handlePeerConnectionChange(this);
+      if (['failed', 'disconnected', 'closed'].includes(this.connectionState)) handleConnectionChange(this);
     });
   }
   close() {
     allPCs.delete(this);
     return super.close();
   }
-  get ondatachannel() {
-    return this.trysteroOnDataChannel || null;
-  }
+  get ondatachannel() { return this.trysteroOnDataChannel || null; }
   set ondatachannel(handler) {
     this.trysteroOnDataChannel = typeof handler === 'function' ? handler : null;
     super.ondatachannel = handler ? (event) => {
-      if (event.channel.label.startsWith('drop:')) return;
-      handler.call(this, event);
+      if (!event.channel.label.startsWith('drop:')) handler.call(this, event);
     } : null;
   }
 }
@@ -172,24 +153,26 @@ function peerIdForConnection(pc) {
   return null;
 }
 
-function handlePeerConnectionChange(pc) {
-  const peerId = peerIdForConnection(pc);
-  if (state.role === 'receiver' && peerId === state.senderPeerId) {
-    for (const receive of state.receive.values()) {
-      if (receive.state === 'receiving' || receive.state === 'waiting' || receive.state === 'checking') {
-        receive.state = 'failed';
-        receive.message = `${connectionLabel(pc)}. Incomplete data was discarded.`;
-        receive.chunks = [];
-      }
-    }
-    renderIncoming();
-  }
-  if (state.role === 'sender') renderReceivers();
+function getPeerConnection(peerId) {
+  return state.room?.getPeers()?.[peerId]?.connection || null;
 }
 
 function connectionLabel(pc) {
-  const value = pc?.connectionState || 'connection closed';
-  return `Connection ${value}`;
+  return `Connection ${pc?.connectionState || 'closed'}${pc ? ` / ICE ${pc.iceConnectionState}` : ''}`;
+}
+
+function handleConnectionChange(pc) {
+  const peerId = peerIdForConnection(pc);
+  if (!peerId) return;
+  for (const receive of state.incoming.values()) {
+    if (receive.peerId === peerId && ['waiting', 'receiving', 'checking'].includes(receive.state)) {
+      receive.state = 'failed';
+      receive.message = `${connectionLabel(pc)}. Incomplete data was discarded.`;
+      receive.chunks = [];
+    }
+  }
+  renderIncoming();
+  renderOutgoing();
 }
 
 async function ensureDisclosure() {
@@ -207,7 +190,6 @@ async function connectRoom() {
   if (state.joined) return;
   const { roomId, password } = await deriveRoom(state.secret);
   const library = await loadVerified('trystero-nostr.js');
-  state.lib = library;
   state.room = library.joinRoom({
     appId: APP_ID,
     password,
@@ -217,7 +199,7 @@ async function connectRoom() {
     rtcConfig: { iceServers: DEV.localIce ? [] : [{ urls: DEFAULT_STUN }] },
     rtcPolyfill: TrackedPC,
   }, roomId);
-  state.action = state.room.makeAction('drop-v1');
+  state.action = state.room.makeAction('drop-room-v2');
   state.action.onMessage(onControl);
   state.room.onPeerJoin(onPeerJoin);
   state.room.onPeerLeave(onPeerLeave);
@@ -225,252 +207,258 @@ async function connectRoom() {
   const self = await state.room.getSelf();
   state.selfId = self.peerId;
   state.joined = true;
-  log(`Joined ${roomId.slice(0, 8)} as ${state.selfId.slice(0, 8)}.`);
+  showRoom(true);
+  ui.inviteLink.value = `${location.origin}${APP_DIR}#k=${b64u.encode(state.secret)}`;
+  history.replaceState(null, '', ui.inviteLink.value);
+  renderPeople();
+  log(`Joined room ${roomId.slice(0, 8)} as ${state.selfId.slice(0, 8)}.`);
+}
+
+async function enterRoom(create = false) {
+  clearError();
+  saveSettings();
+  if (!(await ensureDisclosure())) return;
+  if (create) state.secret = makeSecret();
+  if (!state.secret) {
+    error('This invite link is invalid. Ask for a new room link.');
+    return;
+  }
+  await connectRoom();
+  setInterval(tick, 1000);
 }
 
 function send(peerId, message) {
   return state.action.send(message, peerId ? { target: peerId } : undefined).catch((cause) => {
     error(`Could not contact the peer: ${cause?.message || cause}`);
+    return false;
   });
 }
 
 function onPeerJoin({ peerId }) {
   log(`Peer ${peerId.slice(0, 8)} connected.`);
-  const peerRole = state.role;
-  send(peerId, { type: 'hello', role: peerRole, name: friendlyName(), protocol: PROTOCOL });
+  state.peers.set(peerId, { id: peerId, name: `Peer ${peerId.slice(0, 4)}`, path: 'connecting' });
+  renderPeople();
+  send(peerId, { type: 'hello', name: myName(), protocol: PROTOCOL });
 }
 
 function onPeerLeave({ peerId }) {
-  if (state.role === 'sender') {
-    const receiver = state.receivers.get(peerId);
-    if (receiver) receiver.disconnected = true;
-    state.active.delete(peerId);
-    state.queue = state.queue.filter((queued) => queued !== peerId);
-    renderReceivers();
-  } else if (peerId === state.senderPeerId) {
-    let incomplete = false;
-    for (const receive of state.receive.values()) {
-      if (!['verified', 'failed', 'declined'].includes(receive.state)) {
-        incomplete = true;
-        receive.state = 'failed';
-        receive.message = `${state.senderName || 'The sender'} closed the page; incomplete files were discarded.`;
-        receive.chunks = [];
-      }
+  const peer = state.peers.get(peerId);
+  state.peers.delete(peerId);
+  for (const outgoing of state.outgoing.values()) {
+    const target = outgoing.targets.get(peerId);
+    if (target && !['verified', 'failed'].includes(target.state)) {
+      target.state = 'failed';
+      target.message = `${peer?.name || 'The peer'} left the room; the incomplete file was discarded.`;
     }
-    if (incomplete) renderIncoming();
-    error(`${state.senderName || 'The sender'} closed the page; incomplete files were discarded.`);
   }
+  for (const receive of state.incoming.values()) {
+    if (receive.peerId === peerId && !['verified', 'failed', 'declined'].includes(receive.state)) {
+      receive.state = 'failed';
+      receive.message = `${peer?.name || 'The sender'} left the room; incomplete data was discarded.`;
+      receive.chunks = [];
+    }
+  }
+  renderPeople();
+  renderIncoming();
+  renderOutgoing();
 }
 
 async function onControl(message, context) {
   const peerId = context.peerId;
-  if (!message || typeof message !== 'object') return;
+  if (!message || typeof message !== 'object' || message.protocol && message.protocol !== PROTOCOL) return;
   if (message.type === 'hello') {
-    if (state.role === 'sender' && message.role === 'receiver' && state.manifest) {
-      const existing = state.receivers.get(peerId);
-      if (existing) {
-        existing.disconnected = false;
-        existing.name = String(message.name || existing.name).slice(0, 24);
-        existing.files.clear();
-      }
-      state.receivers.set(peerId, existing || {
-        id: peerId, name: String(message.name || `Receiver ${peerId.slice(0, 4)}`).slice(0, 24),
-        state: 'waiting', files: new Map(), disconnected: false,
-      });
-      renderReceivers();
-      send(peerId, { type: 'manifest', ...state.manifest });
-    } else if (state.role === 'receiver' && message.role === 'sender') {
-      state.senderPeerId = peerId;
-      state.senderName = String(message.name || `Sender ${peerId.slice(0, 4)}`).slice(0, 24);
-      ui.incomingName.textContent = state.senderName;
-    }
+    const peer = state.peers.get(peerId);
+    if (peer) peer.name = String(message.name || peer.name).slice(0, 24);
+    renderPeople();
     return;
   }
-  if (message.type === 'manifest' && state.role === 'receiver') {
-    const invalid = validateManifest(message);
+  if (message.type === 'offer') {
+    const invalid = validateManifest({
+      protocol: PROTOCOL,
+      files: [message.file],
+      total: message.file?.size,
+    });
     if (invalid) {
-      send(peerId, { type: 'decline', reason: invalid });
-      error(`Manifest refused: ${invalid}`);
+      send(peerId, { type: 'decline', fileId: message.file?.id, reason: invalid });
+      error(`Refused an offer from ${peerName(peerId)}: ${invalid}`);
       return;
     }
-    const restarting = state.receive.size > 0;
-    state.senderPeerId = peerId;
-    state.incoming = { ...message, files: sanitizeManifestNames(message.files) };
-    if (!state.senderName) state.senderName = state.incoming.senderName || `Sender ${peerId.slice(0, 4)}`;
-    ui.incomingName.textContent = state.senderName;
-    state.receive.clear();
-    for (const file of state.incoming.files) {
-      state.receive.set(file.id, { ...file, state: 'listed', bytes: 0, chunks: [], hasher: null, message: restarting ? `restarting ${file.name} from the beginning` : '' });
-    }
-    show('receiver');
+    const [safeFile] = sanitizeManifestNames([message.file]);
+    const key = incomingKey(peerId, safeFile.id);
+    state.incoming.set(key, {
+      ...safeFile,
+      peerId,
+      senderName: peerName(peerId),
+      state: 'offered',
+      bytes: 0,
+      chunks: [],
+      hasher: null,
+      message: '',
+    });
     renderIncoming();
-    const signature = state.incoming.files.map((file) => `${file.id}:${file.sha256}`).join('|');
-    if (state.acceptedSignature === signature) {
-      for (const receive of state.receive.values()) {
-        receive.state = 'waiting';
-        receive.message = `restarting ${receive.name} from the beginning`;
-        receive.hasher = state.sha256.create();
-      }
-      renderIncoming();
-      send(peerId, { type: 'accept', ids: state.incoming.files.map((file) => file.id) });
-    }
     return;
   }
-  if (message.type === 'accept' && state.role === 'sender') {
-    const receiver = state.receivers.get(peerId);
-    if (!receiver) return;
-    const ids = Array.isArray(message.ids)
-      ? message.ids.filter((id) => state.preparedFiles.some((file) => file.id === id))
-      : [];
-    receiver.acceptedIds = ids;
-    receiver.state = 'queued';
-    for (const id of ids) receiver.files.set(id, { state: 'waiting', bytes: 0, message: '' });
-    state.queue.push(peerId);
-    renderReceivers();
-    processQueue();
+  if (message.type === 'accept') {
+    const outgoing = state.outgoing.get(message.fileId);
+    const target = outgoing?.targets.get(peerId);
+    if (!target) return;
+    target.state = 'queued';
+    target.message = 'accepted; waiting to send';
+    state.jobs.push({ peerId, fileId: message.fileId });
+    renderOutgoing();
+    processJobs();
     return;
   }
-  if (message.type === 'decline' && state.role === 'sender') {
-    const receiver = state.receivers.get(peerId);
-    if (receiver) receiver.state = `declined${message.reason ? `: ${message.reason}` : ''}`;
-    renderReceivers();
+  if (message.type === 'decline') {
+    const target = state.outgoing.get(message.fileId)?.targets.get(peerId);
+    if (!target) return;
+    target.state = 'failed';
+    target.message = `declined${message.reason ? `: ${message.reason}` : ''}`;
+    renderOutgoing();
     return;
   }
-  if (message.type === 'verify' && state.role === 'sender') {
-    const receiver = state.receivers.get(peerId);
-    const file = receiver?.files.get(message.id);
-    if (!file) return;
-    file.state = message.ok ? 'verified' : 'failed';
-    file.message = message.ok ? 'verified ✓' : 'receiver SHA-256 mismatch ✗';
-    renderReceivers();
-    return;
-  }
-  if (message.type === 'done' && state.role === 'receiver') {
-    const receive = state.receive.get(message.id);
+  if (message.type === 'done') {
+    const receive = state.incoming.get(incomingKey(peerId, message.fileId));
     if (receive?.state === 'verified' || receive?.state === 'failed') {
-      send(state.senderPeerId, { type: 'verify', id: receive.id, ok: receive.state === 'verified' });
-      return;
+      send(peerId, { type: 'verify', fileId: receive.id, ok: receive.state === 'verified' });
     }
-    if (receive?.state === 'sending') {
-      receive.message = 'All bytes sent; waiting for the final chunk.';
-    }
+    return;
+  }
+  if (message.type === 'verify') {
+    const target = state.outgoing.get(message.fileId)?.targets.get(peerId);
+    if (!target) return;
+    target.state = message.ok ? 'verified' : 'failed';
+    target.message = message.ok ? 'verified ✓' : 'receiver SHA-256 mismatch ✗';
+    renderOutgoing();
     return;
   }
   if (message.type === 'cancel') {
-    const label = message.reason || 'Transfer cancelled';
-    if (state.role === 'receiver') {
-      const targets = message.id ? [state.receive.get(message.id)] : [...state.receive.values()];
-      for (const item of targets.filter(Boolean)) {
-        if (!['verified', 'failed'].includes(item.state)) {
-          item.state = 'failed';
-          item.message = label;
-          item.chunks = [];
-        }
-      }
+    const receive = state.incoming.get(incomingKey(peerId, message.fileId));
+    if (receive && !['verified', 'failed'].includes(receive.state)) {
+      receive.state = 'failed';
+      receive.message = message.reason || 'Transfer cancelled.';
+      receive.chunks = [];
       renderIncoming();
     }
   }
 }
 
-function renderProgress(parent, percent, status) {
-  const bar = element('div', `progress ${status === 'verified' ? 'ok' : status === 'failed' ? 'bad' : ''}`);
-  bar.setAttribute('aria-label', `${Math.floor(percent)} percent`);
-  const fill = element('span');
-  fill.style.width = `${Math.min(100, percent).toFixed(1)}%`;
-  bar.append(fill);
-  parent.append(bar);
-}
-
-function renderSenderFiles() {
-  ui.senderFiles.replaceChildren();
-  for (const file of state.manifest?.files || []) {
-    const row = element('div', `file${executableWarning(file.name) ? ' warn' : ''}`);
-    const head = element('div', 'file-head');
-    head.append(element('strong', '', file.name), element('span', '', formatBytes(file.size)));
-    const meta = element('div', 'file-meta mono', `sha256 ${file.sha256}`);
-    if (executableWarning(file.name)) meta.append(element('div', 'status warn', 'Program: only send this if the receiver expects it.'));
-    row.append(head, meta);
-    ui.senderFiles.append(row);
-  }
-}
-
-function renderReceivers() {
-  ui.receivers.replaceChildren();
-  if (!state.receivers.size) {
-    ui.receivers.append(element('div', 'empty', 'No receivers yet.'));
+function renderPeople() {
+  const previousTarget = ui.sendTo.value;
+  ui.people.replaceChildren();
+  ui.sendTo.replaceChildren();
+  ui.sendTo.append(new Option('Everyone', 'all'));
+  if (!state.peers.size) {
+    ui.people.append(element('span', 'dim', 'You are here. Invite someone to start.'));
     return;
   }
-  for (const receiver of state.receivers.values()) {
-    const card = element('div', 'receiver');
-    const head = element('div', 'receiver-head');
-    head.append(element('strong', '', receiver.name), element('span', 'path', receiver.path || 'connecting'));
-    card.append(head);
-    const body = element('div', 'receiver-meta', `${receiver.state}${receiver.disconnected ? ' · disconnected' : ''}`);
-    card.append(body);
-    for (const source of state.preparedFiles) {
-      const transfer = receiver.files.get(source.id);
-      if (!transfer) continue;
-      const line = element('div', 'file-meta', `${source.name}: ${transfer.message || transfer.state}`);
-      if (transfer.bytes != null && source.size) renderProgress(line, transfer.bytes / source.size * 100, transfer.state);
-      card.append(line);
-    }
-    ui.receivers.append(card);
+  for (const peer of state.peers.values()) {
+    const row = element('div', 'person');
+    row.append(element('strong', '', peer.name), element('span', 'dim', `${peer.id.slice(0, 8)} · ${peer.path || 'connecting'} · unverified name`));
+    ui.people.append(row);
+    ui.sendTo.append(new Option(peer.name, peer.id));
+  }
+  if ([...ui.sendTo.options].some((option) => option.value === previousTarget)) ui.sendTo.value = previousTarget;
+}
+
+function progressRow(parent, bytes, size, status) {
+  const progress = element('div', `progress ${status === 'verified' ? 'ok' : status === 'failed' ? 'bad' : ''}`);
+  const fill = element('span');
+  fill.style.width = `${size ? Math.min(100, bytes / size * 100).toFixed(1) : 100}%`;
+  progress.append(fill);
+  parent.append(progress);
+}
+
+function appendFileHeading(card, file) {
+  const head = element('div', 'file-head');
+  head.append(element('strong', '', file.name), element('span', '', formatBytes(file.size)));
+  card.append(head);
+  if (file.nameChanged) card.append(element('div', 'file-meta', `Will be saved as "${file.saveName}".`));
+  if (executableWarning(file.name)) {
+    card.classList.add('warn');
+    card.append(element('div', 'file-meta status warn', 'This is a program. Only accept it if you expected it and trust the sender.'));
   }
 }
 
 function renderIncoming() {
-  if (!state.incoming) return;
-  ui.incomingFiles.replaceChildren();
-  let warning = false;
-  let tooLarge = false;
-  for (const file of state.incoming.files) {
-    const receive = state.receive.get(file.id);
-    const row = element('div', `file${executableWarning(file.name) ? ' warn' : ''}`);
-    const head = element('div', 'file-head');
-    head.append(element('strong', '', file.name), element('span', '', formatBytes(file.size)));
-    row.append(head);
-    if (file.nameChanged) row.append(element('div', 'file-meta', `Will be saved as "${file.saveName}". Original name shown above.`));
-    if (executableWarning(file.name)) {
-      warning = true;
-      row.append(element('div', 'file-meta status warn', `This is a program. Only open it if you trust ${state.senderName || 'the sender'} and expected it.`));
-    }
-    const status = receive.message || receive.state;
-    row.append(element('div', `file-meta status ${receive.state === 'verified' ? 'ok' : receive.state === 'failed' ? 'bad' : ''}`, status));
+  ui.incoming.replaceChildren();
+  if (!state.incoming.size) {
+    ui.incoming.append(element('div', 'empty', 'No incoming files.'));
+    return;
+  }
+  for (const receive of state.incoming.values()) {
+    const card = element('div', `file ${receive.state === 'failed' ? 'failed' : ''}`);
+    appendFileHeading(card, receive);
+    card.append(element('div', 'file-meta', `From ${receive.senderName} (unverified)`));
+    card.append(element('div', `status ${receive.state === 'verified' ? 'ok' : receive.state === 'failed' ? 'bad' : ''}`,
+      receive.message || receive.state));
     if (['waiting', 'receiving', 'checking', 'verified'].includes(receive.state)) {
-      renderProgress(row, file.size ? receive.bytes / file.size * 100 : 100, receive.state);
+      progressRow(card, receive.bytes, receive.size, receive.state);
+    }
+    if (receive.state === 'offered') {
+      const actions = element('div', 'actions compact-actions');
+      const decline = element('button', '', 'Decline');
+      decline.dataset.action = `decline-${receive.peerId}-${receive.id}`;
+      decline.addEventListener('click', () => declineIncoming(receive));
+      const accept = element('button', 'primary', 'Accept');
+      accept.dataset.action = `accept-${receive.peerId}-${receive.id}`;
+      accept.addEventListener('click', () => acceptIncoming(receive));
+      actions.append(decline, accept);
+      if (window.showDirectoryPicker) {
+        const folder = element('button', '', 'Accept to folder');
+        folder.addEventListener('click', async () => {
+          try { await acceptIncoming(receive, await window.showDirectoryPicker({ mode: 'readwrite' })); }
+          catch (cause) { if (cause?.name !== 'AbortError') error(`Could not choose a folder: ${cause?.message || cause}`); }
+        });
+        actions.append(folder);
+      }
+      if (!window.showDirectoryPicker && receive.size > MEMORY_LIMIT) {
+        accept.disabled = true;
+        card.append(element('div', 'file-meta status warn',
+          `Too large for this browser (limit ${formatBytes(MEMORY_LIMIT)}). Use Chrome on a computer and choose a folder.`));
+      }
+      card.append(actions);
     }
     if (receive.state === 'verified') {
-      row.append(element('div', 'file-meta mono', `sha256 ${file.sha256.slice(0, 8)}…`));
+      card.append(element('div', 'file-meta mono', `sha256 ${receive.sha256.slice(0, 8)}…`));
       if (receive.url) {
         const save = element('button', 'primary', 'Save');
         save.addEventListener('click', () => saveBlob(receive));
-        row.append(save);
-      } else if (receive.savedPath) row.append(element('div', 'file-meta', `Saved as ${receive.savedPath}`));
+        card.append(save);
+      } else if (receive.savedPath) card.append(element('div', 'file-meta', `Saved as ${receive.savedPath}`));
     }
-    ui.incomingFiles.append(row);
-    if (!state.directory && file.size > MEMORY_LIMIT) tooLarge = true;
+    ui.incoming.append(card);
   }
-  const total = formatBytes(state.incoming.total);
-  ui.incomingWarning.classList.toggle('hidden', !warning && !tooLarge);
-  ui.incomingWarning.textContent = [
-    warning ? 'Program files are not previewed or opened automatically.' : '',
-    tooLarge ? `Too large for this browser to receive in memory (limit ${formatBytes(MEMORY_LIMIT)}). Use Chrome on a computer and choose a folder.` : '',
-  ].filter(Boolean).join(' ');
-  $('#acceptMemory').disabled = tooLarge;
-  ui.incomingFiles.append(element('div', 'file-meta', `Total: ${total}`));
-  ui.acceptActions.classList.toggle('hidden', [...state.receive.values()].some((file) => file.state !== 'listed'));
 }
 
-function saveBlob(receive) {
-  const anchor = document.createElement('a');
-  anchor.href = receive.url;
-  anchor.download = receive.saveName;
-  anchor.click();
+function renderOutgoing() {
+  ui.outgoing.replaceChildren();
+  if (!state.outgoing.size) {
+    ui.outgoing.append(element('div', 'empty', 'No outgoing files.'));
+    return;
+  }
+  for (const outgoing of state.outgoing.values()) {
+    const card = element('div', 'file');
+    appendFileHeading(card, outgoing);
+    card.append(element('div', 'file-meta mono', `sha256 ${outgoing.sha256.slice(0, 8)}…`));
+    for (const [peerId, target] of outgoing.targets) {
+      const line = element('div', 'file-meta', `${peerName(peerId)}: ${target.message || target.state}`);
+      if (['sending', 'checking', 'verified'].includes(target.state)) progressRow(line, target.bytes, outgoing.size, target.state);
+      card.append(line);
+    }
+    ui.outgoing.append(card);
+  }
 }
 
 async function prepareFiles(fileList) {
   const files = [...fileList];
   if (!files.length) return;
+  const targetIds = ui.sendTo.value === 'all' ? [...state.peers.keys()] : [ui.sendTo.value];
+  if (!targetIds.length || targetIds.some((id) => !state.peers.has(id))) {
+    error('Invite at least one person before sending files.');
+    ui.fileInput.value = '';
+    return;
+  }
   if (files.length > MAX_FILES) {
     error(`Choose at most ${MAX_FILES} files at a time.`);
     return;
@@ -480,125 +468,88 @@ async function prepareFiles(fileList) {
     return;
   }
   clearError();
-  saveSettings();
-  if (!(await ensureDisclosure())) return;
-  state.role = 'sender';
-  state.secret ??= makeSecret();
-  show('room');
-  ui.preparing.classList.remove('hidden');
-  ui.inviteBox.classList.add('hidden');
   state.sha256 ??= (await loadVerified('sha256.js')).sha256;
-  const prepared = [];
-  let completedBytes = 0;
-  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  ui.preparing.classList.remove('hidden');
+  const total = files.reduce((sum, file) => sum + file.size, 0);
+  let completed = 0;
   for (let index = 0; index < files.length; index++) {
-    const file = files[index];
-    ui.preparing.textContent = `Preparing ${files.length} file${files.length === 1 ? '' : 's'}… 0% (${index + 1}/${files.length})`;
-    const sha256 = await hashFile(file, state.sha256, (read) => {
-      const percent = totalBytes ? Math.floor((completedBytes + read) / totalBytes * 100) : 100;
+    const source = files[index];
+    const sha256 = await hashFile(source, state.sha256, (read) => {
+      const percent = total ? Math.floor((completed + read) / total * 100) : 100;
       ui.preparing.textContent = `Preparing ${files.length} file${files.length === 1 ? '' : 's'}… ${percent}% (${index + 1}/${files.length})`;
     });
-    prepared.push({
-      id: crypto.randomUUID(),
-      name: file.name,
-      size: file.size,
-      type: file.type || 'application/octet-stream',
-      sha256,
-      file,
-    });
-    completedBytes += file.size;
+    const outgoing = {
+      id: crypto.randomUUID(), name: source.name, size: source.size,
+      type: source.type || 'application/octet-stream', sha256, source,
+      targets: new Map(targetIds.map((peerId) => [peerId, { state: 'offered', bytes: 0, message: 'waiting for acceptance' }])),
+    };
+    state.outgoing.set(outgoing.id, outgoing);
+    for (const peerId of targetIds) {
+      await send(peerId, {
+        type: 'offer',
+        protocol: PROTOCOL,
+        file: {
+          id: outgoing.id, name: outgoing.name, size: outgoing.size,
+          type: outgoing.type, sha256: outgoing.sha256,
+        },
+      });
+    }
+    completed += source.size;
   }
-  state.preparedFiles = prepared;
-  state.manifest = {
-    type: 'manifest',
-    protocol: PROTOCOL,
-    senderName: friendlyName(),
-    files: prepared.map(({ file, ...metadata }) => metadata),
-    total: prepared.reduce((sum, file) => sum + file.size, 0),
-  };
-  const inviteSecret = b64u.encode(state.secret);
-  history.replaceState(null, '', `${location.pathname}${location.search}#k=${inviteSecret}`);
-  ui.inviteLink.value = location.href;
   ui.preparing.classList.add('hidden');
-  ui.inviteBox.classList.remove('hidden');
-  renderSenderFiles();
-  await connectRoom();
+  ui.fileInput.value = '';
+  renderOutgoing();
 }
 
-async function acceptIncoming(directory = null) {
-  if (!state.incoming) return;
-  if (!directory && state.incoming.files.some((file) => file.size > MEMORY_LIMIT)) {
-    error(`Too large for this browser to receive (limit ${formatBytes(MEMORY_LIMIT)}).`);
+async function acceptIncoming(receive, directory = null) {
+  if (receive.size > MEMORY_LIMIT && !directory) {
+    error(`Too large for this browser to receive in memory (limit ${formatBytes(MEMORY_LIMIT)}). Choose a folder in Chrome.`);
     return;
   }
-  clearError();
-  state.directory = directory;
   state.sha256 ??= (await loadVerified('sha256.js')).sha256;
-  state.acceptedSignature = state.incoming.files.map((file) => `${file.id}:${file.sha256}`).join('|');
-  for (const file of state.incoming.files) {
-    const receive = state.receive.get(file.id);
-    receive.state = 'waiting';
-    receive.message = `waiting for ${file.name}`;
-    receive.bytes = 0;
-    receive.chunks = [];
-    receive.hasher = state.sha256.create();
-  }
+  receive.state = 'waiting';
+  receive.message = 'accepted; waiting for bytes';
+  receive.bytes = 0;
+  receive.chunks = [];
+  receive.hasher = state.sha256.create();
+  receive.directory = directory;
+  receive.partName = `${receive.saveName}.part`;
   renderIncoming();
-  send(state.senderPeerId, { type: 'accept', ids: state.incoming.files.map((file) => file.id) });
+  send(receive.peerId, { type: 'accept', fileId: receive.id });
 }
 
-async function processQueue() {
-  while (state.active.size < MAX_ACTIVE_RECEIVERS && state.queue.length) {
-    const peerId = state.queue.shift();
-    const receiver = state.receivers.get(peerId);
-    if (!receiver || receiver.disconnected) continue;
-    state.active.add(peerId);
-    transferToReceiver(peerId).finally(() => {
-      state.active.delete(peerId);
-      processQueue();
+function declineIncoming(receive) {
+  receive.state = 'declined';
+  receive.message = 'declined';
+  send(receive.peerId, { type: 'decline', fileId: receive.id });
+  renderIncoming();
+}
+
+function processJobs() {
+  while (state.activeJobs.size < MAX_ACTIVE_RECEIVERS && state.jobs.length) {
+    const job = state.jobs.shift();
+    const key = `${job.peerId}:${job.fileId}`;
+    if (state.activeJobs.has(key)) continue;
+    const outgoing = state.outgoing.get(job.fileId);
+    const target = outgoing?.targets.get(job.peerId);
+    if (!outgoing || !target || target.state !== 'queued') continue;
+    state.activeJobs.add(key);
+    transferToPeer(job).finally(() => {
+      state.activeJobs.delete(key);
+      processJobs();
     });
   }
 }
 
-function getPeerConnection(peerId) {
-  return state.room?.getPeers()?.[peerId]?.connection || null;
-}
-
-async function updatePeerPath(peerId) {
+async function openFileChannel(peerId, fileId) {
   const pc = getPeerConnection(peerId);
-  const receiver = state.receivers.get(peerId);
-  if (!pc || !receiver) return;
-  try {
-    const report = await pc.getStats();
-    let pair = null;
-    report.forEach((entry) => {
-      if (entry.type === 'candidate-pair' && entry.state === 'succeeded') pair = entry;
-    });
-    receiver.path = pair?.nominated ? 'direct' : 'direct';
-    for (const entry of report.values()) {
-      if (entry.type === 'candidate-pair' && entry.state === 'succeeded') {
-        const local = report.get(entry.localCandidateId);
-        const remote = report.get(entry.remoteCandidateId);
-        if (local?.candidateType === 'relay' || remote?.candidateType === 'relay') receiver.path = 'relay';
-      }
-    }
-  } catch {
-    receiver.path = 'unknown path';
-  }
-}
-
-async function openFileChannel(peerId, file) {
-  const pc = getPeerConnection(peerId);
-  if (!pc || pc.connectionState !== 'connected') throw new Error('The receiver is no longer connected.');
-  const channel = pc.createDataChannel(`drop:${file.id}`);
+  if (!pc || pc.connectionState !== 'connected') throw new Error('The receiving peer is no longer connected.');
+  const channel = pc.createDataChannel(`drop:${fileId}`);
   channel.binaryType = 'arraybuffer';
   channel.bufferedAmountLowThreshold = LOW_WATER_MARK;
-  channel.addEventListener('error', () => {
-    log(`Sender file channel failed while peer connection was ${pc.connectionState}/${pc.iceConnectionState}.`);
-  });
   if (channel.readyState === 'open') return channel;
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('The file channel did not open.')), 15_000);
+    const timer = setTimeout(() => reject(new Error('The file channel did not open.')), STALL_MS);
     channel.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
     channel.addEventListener('error', () => { clearTimeout(timer); reject(new Error('The file channel failed to open.')); }, { once: true });
     channel.addEventListener('close', () => { clearTimeout(timer); reject(new Error('The file channel closed before it opened.')); }, { once: true });
@@ -609,118 +560,103 @@ async function openFileChannel(peerId, file) {
 async function waitForChannelEmpty(channel) {
   const started = Date.now();
   while (channel.readyState === 'open' && channel.bufferedAmount > 0) {
-    if (Date.now() - started > STALL_MS) {
-      throw new Error('The connection stalled while draining the final file chunk.');
-    }
+    if (Date.now() - started > STALL_MS) throw new Error('The connection stalled while draining the final file chunk.');
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   if (channel.readyState !== 'open') throw new Error('The file channel closed before its final bytes drained.');
 }
 
-async function waitForVerification(transfer) {
+async function waitForVerification(target) {
   const started = Date.now();
-  while (!['verified', 'failed'].includes(transfer.state)) {
+  while (!['verified', 'failed'].includes(target.state)) {
     if (Date.now() - started > STALL_MS) throw new Error('The receiver did not confirm the SHA-256 within 15 seconds.');
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  return transfer.state === 'verified';
+  return target.state === 'verified';
 }
 
-async function transferToReceiver(peerId) {
-  const receiver = state.receivers.get(peerId);
-  receiver.state = 'sending';
-  await updatePeerPath(peerId);
-  for (const id of receiver.acceptedIds || []) {
-    const source = state.preparedFiles.find((file) => file.id === id);
-    if (!source) continue;
-    const transfer = receiver.files.get(id);
-    transfer.state = 'opening';
-    transfer.message = 'opening a dedicated data channel';
-    renderReceivers();
-    try {
-      const channel = await openFileChannel(peerId, source);
-      const reader = source.file.stream().getReader();
-      let done = false;
-      while (!done) {
+async function transferToPeer({ peerId, fileId }) {
+  const outgoing = state.outgoing.get(fileId);
+  const target = outgoing?.targets.get(peerId);
+  if (!outgoing || !target) return;
+  try {
+    target.state = 'opening';
+    target.message = 'opening a dedicated data channel';
+    renderOutgoing();
+    const channel = await openFileChannel(peerId, fileId);
+    const reader = outgoing.source.stream().getReader();
+    let done = false;
+    while (!done) {
+      await waitForChannelDrain(channel);
+      if (state.cancelled || channel.readyState !== 'open') throw new Error('The transfer or connection was closed.');
+      const next = await reader.read();
+      done = next.done;
+      if (done) break;
+      for (let offset = 0; offset < next.value.byteLength; offset += CHUNK_SIZE) {
         await waitForChannelDrain(channel);
-        if (state.cancelled || receiver.disconnected || channel.readyState !== 'open') {
-          throw new Error('The transfer was cancelled or the receiver disconnected.');
+        let chunk = next.value.subarray(offset, Math.min(offset + CHUNK_SIZE, next.value.byteLength));
+        if (DEV.flipFirstByte && target.bytes === 0 && !corruptedTransfers.has(fileId)) {
+          chunk = chunk.slice();
+          chunk[0] ^= 1;
+          corruptedTransfers.add(fileId);
         }
-        const next = await reader.read();
-        done = next.done;
-        if (done) break;
-        for (let offset = 0; offset < next.value.byteLength; offset += CHUNK_SIZE) {
-          await waitForChannelDrain(channel);
-          const end = Math.min(offset + CHUNK_SIZE, next.value.byteLength);
-          let chunk = next.value.subarray(offset, end);
-          if (DEV.flipFirstByte && transfer.bytes === 0 && !corruptedTransfers.has(id)) {
-            chunk = chunk.slice();
-            chunk[0] ^= 1;
-            corruptedTransfers.add(id);
-          }
-          channel.send(chunk);
-          transfer.state = 'sending';
-          transfer.bytes += chunk.byteLength;
-          transfer.message = `sending ${Math.floor(transfer.bytes / source.size * 100)}%`;
-          renderReceivers();
-          if (channel.bufferedAmount > HIGH_WATER_MARK) await waitForChannelDrain(channel);
-        }
+        channel.send(chunk);
+        target.state = 'sending';
+        target.bytes += chunk.byteLength;
+        target.message = `sending ${Math.floor(target.bytes / outgoing.size * 100)}%`;
+        renderOutgoing();
+        if (channel.bufferedAmount > HIGH_WATER_MARK) await waitForChannelDrain(channel);
       }
-      await waitForChannelEmpty(channel);
-      transfer.state = 'checking';
-      transfer.bytes = source.size;
-      transfer.message = 'sent; waiting for receiver SHA-256';
-      renderReceivers();
-      await send(peerId, { type: 'done', id, bytes: transfer.bytes });
-      const verified = await waitForVerification(transfer);
-      channel.close();
-      if (!verified) continue;
-    } catch (cause) {
-      transfer.state = 'failed';
-      transfer.message = cause?.message || String(cause);
-      send(peerId, { type: 'cancel', id, reason: transfer.message });
-      receiver.state = 'failed';
-      renderReceivers();
-      return;
     }
+    await waitForChannelEmpty(channel);
+    target.state = 'checking';
+    target.message = 'sent; waiting for receiver SHA-256';
+    renderOutgoing();
+    await send(peerId, { type: 'done', fileId, bytes: target.bytes });
+    await waitForVerification(target);
+    channel.close();
+  } catch (cause) {
+    if (!['verified', 'failed'].includes(target.state)) {
+      target.state = 'failed';
+      target.message = cause?.message || String(cause);
+      send(peerId, { type: 'cancel', fileId, reason: target.message });
+    }
+    renderOutgoing();
   }
-  receiver.state = receiver.disconnected ? 'disconnected' : 'sent; waiting for verification';
-  renderReceivers();
+}
+
+function findIncoming(peerId, fileId) {
+  return state.incoming.get(incomingKey(peerId, fileId));
 }
 
 function onIncomingDataChannel(pc, channel) {
   if (!channel.label.startsWith('drop:')) return;
-  const id = channel.label.slice(5);
-  const receive = state.receive.get(id);
-  if (!receive || !['waiting', 'listed'].includes(receive.state)) {
+  const peerId = peerIdForConnection(pc);
+  const receive = peerId && findIncoming(peerId, channel.label.slice(5));
+  if (!receive || receive.state !== 'waiting') {
     channel.close();
-    send(state.senderPeerId, { type: 'cancel', id, reason: 'The file was not accepted.' });
+    if (peerId) send(peerId, { type: 'cancel', fileId: channel.label.slice(5), reason: 'That file was not accepted.' });
     return;
   }
-  if (peerIdForConnection(pc) !== state.senderPeerId) {
-    channel.close();
-    return;
-  }
+  channel.binaryType = 'arraybuffer';
   receive.state = 'receiving';
   receive.message = 'receiving';
   receive.lastByteAt = Date.now();
-  channel.binaryType = 'arraybuffer';
   receive.writeQueue = Promise.resolve();
-  receive.partName = `${receive.saveName}.part`;
   channel.addEventListener('message', (event) => {
     const bytes = event.data instanceof ArrayBuffer ? event.data : event.data?.buffer;
     if (!(bytes instanceof ArrayBuffer)) return failReceive(receive, 'Received an unsupported chunk format.');
     if (receive.bytes + bytes.byteLength > receive.size) {
       channel.close();
-      return failReceive(receive, 'The sender sent more bytes than the manifest allowed.');
+      return failReceive(receive, 'The sender sent more bytes than the accepted file size.');
     }
     const chunk = new Uint8Array(bytes);
     receive.hasher.update(chunk);
     receive.bytes += chunk.byteLength;
     receive.lastByteAt = Date.now();
     receive.writeQueue = receive.writeQueue.then(async () => {
-      if (state.directory) {
-        receive.partHandle ??= await state.directory.getFileHandle(receive.partName, { create: true });
+      if (receive.directory) {
+        receive.partHandle ??= await receive.directory.getFileHandle(receive.partName, { create: true });
         receive.writer ??= await receive.partHandle.createWritable();
         await receive.writer.write(chunk);
       } else {
@@ -730,28 +666,24 @@ function onIncomingDataChannel(pc, channel) {
     renderIncoming();
     if (receive.bytes === receive.size) finishReceive(receive).catch((cause) => failReceive(receive, cause?.message || String(cause)));
   });
-  channel.addEventListener('error', () => failReceive(receive,
-    `The file data channel failed while the peer connection was ${pc.connectionState}/${pc.iceConnectionState}.`));
+  channel.addEventListener('error', () => failReceive(receive, `The file data channel failed. ${connectionLabel(pc)}.`));
   channel.addEventListener('close', () => {
-    if (receive.state === 'receiving') failReceive(receive,
-      `The file data channel closed before every byte arrived (${receive.bytes}/${receive.size}; ${pc.connectionState}/${pc.iceConnectionState}).`);
+    if (receive.state === 'receiving') failReceive(receive, `The file channel closed before every byte arrived (${receive.bytes}/${receive.size}).`);
   });
   renderIncoming();
 }
 
 async function finalizePart(receive) {
-  if (receive.writer) {
-    await receive.writer.close();
-    receive.writer = null;
-  }
-  const finalHandle = await state.directory.getFileHandle(receive.saveName, { create: true });
+  await receive.writer?.close();
+  receive.writer = null;
+  const final = await receive.directory.getFileHandle(receive.saveName, { create: true });
   if (typeof receive.partHandle?.move === 'function') {
     await receive.partHandle.move(receive.saveName);
   } else {
     const file = await receive.partHandle.getFile();
-    const output = await finalHandle.createWritable();
+    const output = await final.createWritable();
     await file.stream().pipeTo(output);
-    await state.directory.removeEntry(receive.partName);
+    await receive.directory.removeEntry(receive.partName);
   }
   receive.savedPath = receive.saveName;
 }
@@ -762,28 +694,26 @@ async function finishReceive(receive) {
   receive.message = 'checking SHA-256';
   renderIncoming();
   await receive.writeQueue;
-  const actual = hex(receive.hasher.digest());
-  if (actual !== receive.sha256) {
+  if (hex(receive.hasher.digest()) !== receive.sha256) {
     receive.state = 'failed';
     receive.chunks = [];
-    if (receive.writer) await receive.writer.close().catch(() => {});
+    await receive.writer?.close().catch(() => {});
     receive.writer = null;
-    receive.message = state.directory
-      ? `The file arrived damaged and was discarded. ${receive.partName} is not safe: delete this file.`
+    receive.message = receive.directory
+      ? `The file arrived damaged. ${receive.partName} is not safe: delete this file.`
       : 'The file arrived damaged and was discarded.';
-    await send(state.senderPeerId, { type: 'verify', id: receive.id, ok: false });
+    send(receive.peerId, { type: 'verify', fileId: receive.id, ok: false });
     renderIncoming();
     return;
   }
-  if (state.directory) {
-    await finalizePart(receive);
-  } else {
-    receive.url = URL.createObjectURL(new Blob(receive.chunks, { type: receive.type || 'application/octet-stream' }));
+  if (receive.directory) await finalizePart(receive);
+  else {
+    receive.url = URL.createObjectURL(new Blob(receive.chunks, { type: receive.type }));
     receive.chunks = [];
   }
   receive.state = 'verified';
   receive.message = 'verified ✓';
-  await send(state.senderPeerId, { type: 'verify', id: receive.id, ok: true });
+  send(receive.peerId, { type: 'verify', fileId: receive.id, ok: true });
   renderIncoming();
 }
 
@@ -792,39 +722,64 @@ function failReceive(receive, message) {
   receive.state = 'failed';
   receive.message = message;
   receive.chunks = [];
-  if (receive.writer) receive.writer.abort().catch(() => {});
-  send(state.senderPeerId, { type: 'verify', id: receive.id, ok: false });
+  receive.writer?.abort().catch(() => {});
+  send(receive.peerId, { type: 'verify', fileId: receive.id, ok: false });
   renderIncoming();
 }
 
-async function declineIncoming() {
-  if (!state.incoming) return;
-  send(state.senderPeerId, { type: 'decline' });
-  ui.receiverStatus.replaceChildren(element('p', 'dim', 'Declined. No file bytes were received.'));
-  ui.acceptActions.classList.add('hidden');
+function saveBlob(receive) {
+  const anchor = document.createElement('a');
+  anchor.href = receive.url;
+  anchor.download = receive.saveName;
+  anchor.click();
+}
+
+async function updatePaths() {
+  for (const peer of state.peers.values()) {
+    const pc = getPeerConnection(peer.id);
+    if (!pc || pc.connectionState !== 'connected') continue;
+    try {
+      const report = await pc.getStats();
+      let relay = false;
+      for (const entry of report.values()) {
+        if (entry.type !== 'candidate-pair' || entry.state !== 'succeeded') continue;
+        const local = report.get(entry.localCandidateId);
+        const remote = report.get(entry.remoteCandidateId);
+        relay ||= local?.candidateType === 'relay' || remote?.candidateType === 'relay';
+      }
+      peer.path = relay ? 'relay' : 'direct';
+    } catch { peer.path = 'unknown path'; }
+  }
+  renderPeople();
+}
+
+function tick() {
+  updatePaths();
+  const now = Date.now();
+  for (const receive of state.incoming.values()) {
+    if (receive.state === 'receiving' && now - receive.lastByteAt >= STALL_MS) {
+      failReceive(receive, `Stalled: no data from ${receive.senderName} for 15 s. ${connectionLabel(getPeerConnection(receive.peerId))}.`);
+    }
+  }
 }
 
 function runConsole(command) {
   const [name, argument] = command.trim().split(/\s+(.*)/);
   log(`> ${command}`, 'command');
   if (name === '/peers') {
-    log(state.role === 'sender'
-      ? [...state.receivers.values()].map((r) => `${r.name} (${r.id.slice(0, 8)}) ${r.state} ${r.path || ''}`).join('\n') || 'No peers.'
-      : `${state.senderName || 'No sender'} ${state.senderPeerId ? state.senderPeerId.slice(0, 8) : ''}`);
+    log([...state.peers.values()].map((peer) => `${peer.name} (${peer.id.slice(0, 8)}) ${peer.path || ''}`).join('\n') || 'No other peers.');
   } else if (name === '/path') {
-    log(state.role === 'sender'
-      ? [...state.receivers.values()].map((r) => `${r.name}: ${r.path || 'unknown path'}`).join('\n') || 'No peers.'
-      : 'The path is selected per connection and shown by the sender. No TURN server is configured.');
+    log([...state.peers.values()].map((peer) => `${peer.name}: ${peer.path || 'unknown path'}`).join('\n') || 'No peers.');
   } else if (name === '/diag') {
     log(JSON.stringify({
       app: { name: APP_ID, version: VERSION, protocol: PROTOCOL },
-      role: state.role,
       self: state.selfId,
-      peers: state.room ? Object.keys(state.room.getPeers()).length : 0,
+      peers: state.peers.size,
       connections: [...allPCs].map((pc) => ({ state: pc.connectionState, ice: pc.iceConnectionState })),
+      incoming: state.incoming.size,
+      outgoing: state.outgoing.size,
       memoryLimit: MEMORY_LIMIT,
       streaming: !!window.showDirectoryPicker,
-      iceServers: DEV.localIce ? [] : [DEFAULT_STUN],
     }, null, 2));
   } else if (name === '/relays') {
     log(ACTIVE_RELAYS.join('\n'));
@@ -834,16 +789,14 @@ function runConsole(command) {
       location.host,
       ...ACTIVE_RELAYS.map((url) => new URL(url).host),
       ...(!DEV.localIce ? ['stun.cloudflare.com:3478'] : []),
-      '<accepted peers>',
+      '<room peers>',
       '',
       'OBSERVED WEBSOCKETS',
       ...observedSockets,
-      '',
-      `Every observed WebSocket host is declared: ${[...observedSockets].every((host) => ACTIVE_RELAYS.some((url) => new URL(url).host === host))}`,
     ].join('\n'));
   } else if (name === '/hash') {
-    const files = state.role === 'sender' ? state.preparedFiles : state.incoming?.files || [];
-    const file = files.find((item) => item.name === argument || item.id === argument);
+    const file = [...state.outgoing.values(), ...state.incoming.values()]
+      .find((item) => item.name === argument || item.id === argument);
     log(file ? `${file.name}\n${file.sha256}\nshort: ${file.sha256.slice(0, 8)}` : `No file named "${argument || ''}".`);
   } else if (name === '/about') {
     log([
@@ -877,35 +830,32 @@ async function renderQr() {
 }
 
 function initializeEvents() {
-  ui.fileInput.addEventListener('change', () => prepareFiles(ui.fileInput.files));
-  ui.dropZone.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    ui.dropZone.classList.add('drag');
+  $('#createRoom').addEventListener('click', () => {
+    enterRoom(!state.secret).catch((cause) => error(`Could not enter the room: ${cause?.message || cause}`));
   });
+  ui.displayName.addEventListener('change', saveSettings);
+  ui.fileInput.addEventListener('change', () => prepareFiles(ui.fileInput.files));
+  ui.dropZone.addEventListener('dragover', (event) => { event.preventDefault(); ui.dropZone.classList.add('drag'); });
   ui.dropZone.addEventListener('dragleave', () => ui.dropZone.classList.remove('drag'));
   ui.dropZone.addEventListener('drop', (event) => {
     event.preventDefault();
     ui.dropZone.classList.remove('drag');
     prepareFiles(event.dataTransfer.files);
   });
-  ui.senderName.addEventListener('change', saveSettings);
   $('#copyLink').addEventListener('click', async () => {
     await navigator.clipboard.writeText(ui.inviteLink.value);
     $('#copyLink').textContent = 'Copied';
     setTimeout(() => { $('#copyLink').textContent = 'Copy link'; }, 1200);
   });
   $('#showQr').addEventListener('click', renderQr);
-  $('#decline').addEventListener('click', declineIncoming);
-  $('#acceptMemory').addEventListener('click', () => acceptIncoming());
-  if (window.showDirectoryPicker) {
-    $('#acceptFolder').classList.remove('hidden');
-    $('#acceptFolder').addEventListener('click', async () => {
-      try { await acceptIncoming(await window.showDirectoryPicker({ mode: 'readwrite' })); }
-      catch (cause) { if (cause?.name !== 'AbortError') error(`Could not choose a folder: ${cause?.message || cause}`); }
-    });
-  }
+  $('#leaveRoom').addEventListener('click', () => {
+    state.cancelled = true;
+    state.room?.leave();
+    history.replaceState(null, '', location.pathname + location.search);
+    location.reload();
+  });
   $('#consoleToggle').addEventListener('click', () => {
-    const visible = ui.consolePanel.classList.toggle('hidden') === false;
+    const visible = !ui.consolePanel.classList.toggle('hidden');
     $('#consoleToggle').setAttribute('aria-pressed', String(visible));
     if (visible) ui.consoleIn.focus();
   });
@@ -915,59 +865,21 @@ function initializeEvents() {
   });
 }
 
-async function boot() {
-  initializeEvents();
-  if (state.secret) {
-    state.role = 'receiver';
-    show('receiver');
-    ui.incomingFiles.append(element('div', 'empty', 'Connecting to the sender…'));
-    ui.acceptActions.classList.add('hidden');
-    if (!(await ensureDisclosure())) {
-      history.replaceState(null, '', location.pathname + location.search);
-      location.reload();
-      return;
-    }
-    await connectRoom();
-    sendTimer();
-  } else {
-    show('start');
-  }
-  log(`drop-webCLI ${VERSION}; relays are public rendezvous only, file bytes are peer-to-peer.`);
-}
-
-function sendTimer() {
-  setInterval(async () => {
-    if (state.role === 'sender') {
-      await Promise.all([...state.receivers.keys()].map(updatePeerPath));
-      renderReceivers();
-    }
-    if (state.role === 'receiver') {
-      const now = Date.now();
-      for (const receive of state.receive.values()) {
-        if (receive.state === 'receiving' && now - receive.lastByteAt >= STALL_MS) {
-          failReceive(receive, `Stalled: no data from ${state.senderName || 'the sender'} for 15 s. ${connectionLabel(getPeerConnection(state.senderPeerId))}.`);
-        }
-      }
-    }
-  }, 1000);
-}
-
 addEventListener('pagehide', () => {
   state.cancelled = true;
-  if (state.action && state.room) {
-    try {
-      state.action.send({ type: 'cancel', reason: 'The sender or receiver closed the page.' });
-      state.room.leave();
-    } catch {}
-  }
+  try { state.room?.leave(); } catch {}
 });
 
-window.drop = {
-  state, allPCs, deriveRoom, executableWarning, sanitizeManifestNames, validateManifest,
-  runConsole, loadVerified,
-};
+window.drop = { state, allPCs, deriveRoom, executableWarning, sanitizeManifestNames, validateManifest, runConsole, loadVerified };
 
-boot().catch((cause) => {
-  error(`drop-webCLI could not start: ${cause?.message || cause}`);
-  console.error(cause);
-});
+initializeEvents();
+if (state.secret) {
+  showRoom(false);
+  $('#startScreen .eyebrow').textContent = 'Room invitation';
+  $('#startScreen h1').textContent = 'Join this room';
+  $('#startScreen .lede').textContent = 'Choose a display name, then join. Everyone in the room can send and receive files.';
+  $('#createRoom').textContent = 'Join room';
+} else {
+  showRoom(false);
+  log(`drop-webCLI ${VERSION}; rooms are temporary and every received file requires acceptance.`);
+}
