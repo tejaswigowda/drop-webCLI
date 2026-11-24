@@ -204,7 +204,7 @@ async function connectRoom() {
     maxUsers: 10,
     identity: 'none',
     relayConfig: { urls: ACTIVE_RELAYS, warnOnRelayFailure: false },
-    rtcConfig: { iceServers: [{ urls: DEFAULT_STUN }] },
+    rtcConfig: { iceServers: DEV.localIce ? [] : [{ urls: DEFAULT_STUN }] },
     rtcPolyfill: TrackedPC,
   }, roomId);
   state.action = state.room.makeAction('drop-v1');
@@ -337,6 +337,10 @@ async function onControl(message, context) {
   }
   if (message.type === 'done' && state.role === 'receiver') {
     const receive = state.receive.get(message.id);
+    if (receive?.state === 'verified') {
+      send(state.senderPeerId, { type: 'verify', id: receive.id, ok: true });
+      return;
+    }
     if (receive?.state === 'sending') {
       receive.message = 'All bytes sent; waiting for the final chunk.';
     }
@@ -579,6 +583,9 @@ async function openFileChannel(peerId, file) {
   const channel = pc.createDataChannel(`drop:${file.id}`);
   channel.binaryType = 'arraybuffer';
   channel.bufferedAmountLowThreshold = LOW_WATER_MARK;
+  channel.addEventListener('error', () => {
+    log(`Sender file channel failed while peer connection was ${pc.connectionState}/${pc.iceConnectionState}.`);
+  });
   if (channel.readyState === 'open') return channel;
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('The file channel did not open.')), 15_000);
@@ -587,6 +594,17 @@ async function openFileChannel(peerId, file) {
     channel.addEventListener('close', () => { clearTimeout(timer); reject(new Error('The file channel closed before it opened.')); }, { once: true });
   });
   return channel;
+}
+
+async function waitForChannelEmpty(channel) {
+  const started = Date.now();
+  while (channel.readyState === 'open' && channel.bufferedAmount > 0) {
+    if (Date.now() - started > STALL_MS) {
+      throw new Error('The connection stalled while draining the final file chunk.');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (channel.readyState !== 'open') throw new Error('The file channel closed before its final bytes drained.');
 }
 
 async function transferToReceiver(peerId) {
@@ -629,6 +647,7 @@ async function transferToReceiver(peerId) {
           if (channel.bufferedAmount > HIGH_WATER_MARK) await waitForChannelDrain(channel);
         }
       }
+      await waitForChannelEmpty(channel);
       transfer.state = 'checking';
       transfer.bytes = source.size;
       transfer.message = 'sent; waiting for receiver SHA-256';
@@ -690,9 +709,11 @@ function onIncomingDataChannel(pc, channel) {
     renderIncoming();
     if (receive.bytes === receive.size) finishReceive(receive).catch((cause) => failReceive(receive, cause?.message || String(cause)));
   });
-  channel.addEventListener('error', () => failReceive(receive, 'The file data channel failed.'));
+  channel.addEventListener('error', () => failReceive(receive,
+    `The file data channel failed while the peer connection was ${pc.connectionState}/${pc.iceConnectionState}.`));
   channel.addEventListener('close', () => {
-    if (receive.state === 'receiving') failReceive(receive, 'The connection closed before every byte arrived.');
+    if (receive.state === 'receiving') failReceive(receive,
+      `The file data channel closed before every byte arrived (${receive.bytes}/${receive.size}; ${pc.connectionState}/${pc.iceConnectionState}).`);
   });
   renderIncoming();
 }
@@ -782,6 +803,7 @@ function runConsole(command) {
       connections: [...allPCs].map((pc) => ({ state: pc.connectionState, ice: pc.iceConnectionState })),
       memoryLimit: MEMORY_LIMIT,
       streaming: !!window.showDirectoryPicker,
+      iceServers: DEV.localIce ? [] : [DEFAULT_STUN],
     }, null, 2));
   } else if (name === '/relays') {
     log(ACTIVE_RELAYS.join('\n'));
@@ -790,7 +812,7 @@ function runConsole(command) {
       'DECLARED HOSTS',
       location.host,
       ...ACTIVE_RELAYS.map((url) => new URL(url).host),
-      'stun.cloudflare.com:3478',
+      ...(!DEV.localIce ? ['stun.cloudflare.com:3478'] : []),
       '<accepted peers>',
       '',
       'OBSERVED WEBSOCKETS',

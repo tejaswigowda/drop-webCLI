@@ -52,7 +52,7 @@ try {
     contexts.push(context);
     await context.addInitScript(({ relayUrl, flipFirstByte }) => {
       localStorage.setItem('drop.ipNotice.1', '1');
-      localStorage.setItem('drop.dev', JSON.stringify({ relays: [relayUrl], ...(flipFirstByte ? { flipFirstByte: true } : {}) }));
+      localStorage.setItem('drop.dev', JSON.stringify({ relays: [relayUrl], localIce: true, ...(flipFirstByte ? { flipFirstByte: true } : {}) }));
     }, { relayUrl: relay.url, flipFirstByte });
     const page = await context.newPage();
     page.on('pageerror', (cause) => check('no page error', false, cause.message));
@@ -88,7 +88,7 @@ try {
     const receiverVerified = await until(async () => (await receiver.locator('#incomingFiles .status.ok').count()) === 2, 45_000);
     const senderVerified = await until(async () => (await sender.locator('#receivers').textContent()).match(/verified ✓/g)?.length === 2, 45_000);
     check(`DP6–DP10 ${browserName} chunks transfer and both sides verify SHA-256`, receiverVerified && senderVerified,
-      `${await receiver.textContent('#incomingFiles')} | ${await sender.textContent('#receivers')}`);
+      `${await receiver.textContent('#incomingFiles')} | ${await sender.textContent('#receivers')} | ${await sender.textContent('#consoleOut')} | ${await receiver.textContent('#consoleOut')}`);
     check('DP15 received content has Save buttons and never auto-downloads', await receiver.getByRole('button', { name: 'Save' }).count() === 2);
   }
 
