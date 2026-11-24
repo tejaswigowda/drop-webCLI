@@ -6,7 +6,7 @@ This is not storage, a cloud locker, a mailbox, or â€œAirDrop for the internet.â
 
 ## Status
 
-`v0.2.0` is the room and bidirectional-transfer release. The automated suite covers:
+`v0.2.1` is the room and bidirectional-transfer release, styled to match the rest of the webCLI family. The automated suite covers:
 
 - a 128-bit invite secret that appears only in the URL fragment;
 - different `drop-webCLI` topic/password derivation labels;
@@ -17,7 +17,10 @@ This is not storage, a cloud locker, a mailbox, or â€œAirDrop for the internet.â
 - dedicated ordered, reliable 16 KiB data channels with 4 MiB / 1 MiB backpressure watermarks;
 - byte-accurate progress, filename sanitization, executable warnings, and manifest limits;
 - relay-frame checks for the invite secret and plaintext SDP;
-- a two-browser, real WebRTC transfer through a mock Nostr relay.
+- a two-browser, real WebRTC transfer through a mock Nostr relay;
+- the same transfer flow in Chromium and Firefox.
+
+The UI uses the shared webCLI visual language: near-black canvas, compact dark panels, muted borders, indigo/lavender accents, a fixed application header, and responsive two-column transfer status. The room workflow remains intentionally simple: create or join, invite, send, accept, verify, save.
 
 Browser-size ceilings, sustained throughput, and the real-device matrix have not been measured yet. Pending rows are deliberately marked below rather than presented as capabilities.
 
@@ -28,7 +31,9 @@ npm install
 npm start
 ```
 
-Open `http://localhost:8080/`, enter a display name, create a room, copy the room link, and open it in another browser profile or device that can reach the page. The invited person chooses a name and joins the same room. Anyone can select **Everyone** or a specific person, then send files. The static server only receives page requests; it does not receive file bytes or the fragment secret.
+Open `http://localhost:8080/`, enter a display name, and select **Create room**. Copy the room link and open it in another browser profile or device that can reach the page. The invited person chooses a name and selects **Join room**. Anyone can then select **Everyone** or a specific person, choose files, and send.
+
+On the receiving side, every offered file remains independent: review its sender, name, size, executable warning, and total state, then choose **Accept**, **Accept to folder**, or **Decline**. The static server only receives page requests; it does not receive file bytes or the fragment secret.
 
 Run the checks:
 

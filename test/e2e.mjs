@@ -123,6 +123,15 @@ try {
   check('DP25 every observed WebSocket is the configured test relay', requests
     .filter((url) => url.startsWith('ws:') || url.startsWith('wss:'))
     .every((url) => new URL(url).host === new URL(relay.url).host));
+
+  await sender.click('#newRoom');
+  await sender.click('#newRoomDialog button[value="cancel"]');
+  check('New room action requires confirmation', await sender.isVisible('#roomScreen')
+    && (await sender.url()).includes('#k='));
+  await sender.click('#newRoom');
+  await sender.click('#confirmNewRoom');
+  await sender.waitForSelector('#startScreen:not(.hidden)');
+  check('Confirmed New returns home without a fragment', await sender.url() === `${origin}/`);
 } catch (cause) {
   console.error(cause);
   console.error(`relay frames (${relay.frames.length}):`, relay.frames.slice(-20));
