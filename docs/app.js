@@ -1,12 +1,12 @@
 import {
   APP_ID, CHUNK_SIZE, DEFAULT_STUN, HIGH_WATER_MARK, LOW_WATER_MARK, MAX_ACTIVE_RECEIVERS,
-  MAX_FILES, PROTOCOL, RELAYS, STALL_MS, b64u, deriveRoom, executableWarning, formatBytes,
-  hashFile, hex, makeSecret, parseInvite, sanitizeManifestNames, validateManifest,
+  MAX_FILES, PROTOCOL, RELAYS, STALL_MS, deriveRoom, executableWarning, formatBytes,
+  hashFile, hex, inviteHash, makeInviteSecret, parseInvite, sanitizeManifestNames, validateManifest,
   waitForChannelDrain,
 } from './lib/core.js';
 
 const PINS = /*PINS*/{"trystero-nostr.js":{"version":"0.27.0","package":"@trystero-p2p/nostr","sha256":"d26013f7ecae563f4fcdbf7dece219cfdb5f2d3efc2caff32df9a768d5066fc6"},"qrcode.js":{"version":"1.5.2","package":"qrcode-generator","sha256":"065509cfd450f89dbffccc8e37d16f5cb03099aef7c36ab2a23d27611bd97b03"},"sha256.js":{"version":"2.0.1","package":"@noble/hashes","sha256":"d1cc9098f317cf4c5c1652090f680cd4303a9854e345845199ccdae64269c79e"}}/*END-PINS*/;
-const VERSION = '0.2.4';
+const VERSION = '0.2.6';
 const APP_DIR = (() => {
   const pathname = location.pathname;
   if (pathname.endsWith('/')) return pathname;
@@ -20,7 +20,6 @@ const DEV = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)
   ? (() => { try { return JSON.parse(localStorage.getItem('drop.dev') || '{}'); } catch { return {}; } })()
   : {};
 const MEMORY_LIMIT = Number(DEV.memoryLimit) || DEFAULT_MEMORY_LIMIT;
-const ACTIVE_RELAYS = Array.isArray(DEV.relays) && DEV.relays.length ? DEV.relays : RELAYS;
 const $ = (selector) => document.querySelector(selector);
 const ui = {
   error: $('#errorBanner'), start: $('#startScreen'), room: $('#roomScreen'),
@@ -36,12 +35,20 @@ const settings = (() => {
   catch { return { name: '' }; }
 })();
 ui.displayName.value = settings.name;
+const activeRelays = () => Array.isArray(DEV.relays) && DEV.relays.length
+  ? DEV.relays
+  : Array.isArray(settings.relays) && settings.relays.length
+    ? settings.relays
+    : RELAYS;
+const invite = parseInvite(location.hash);
 
 const state = {
   room: null,
   action: null,
   selfId: null,
-  secret: parseInvite(location.hash),
+  secret: invite?.secret || null,
+  expiresAt: invite?.expiresAt || null,
+  roomCreatedAt: null,
   sha256: null,
   joined: false,
   peers: new Map(),
@@ -49,24 +56,78 @@ const state = {
   outgoing: new Map(),
   jobs: [],
   activeJobs: new Set(),
+  departedPeers: new Map(),
   cancelled: false,
+  sessionId: crypto.randomUUID(),
 };
 const allPCs = new Set();
 const observedSockets = new Set();
 const corruptedTransfers = new Set();
 const libCache = {};
 const consoleLines = [];
+let screenWakeLock = null;
 
 const myName = () => ui.displayName.value.trim().slice(0, 24)
   || `Guest ${state.selfId ? state.selfId.slice(0, 4) : '...'}`;
 const incomingKey = (peerId, fileId) => `${peerId}:${fileId}`;
 const peerName = (peerId) => state.peers.get(peerId)?.name || `Peer ${peerId.slice(0, 4)}`;
+const activeIncoming = () => [...state.incoming.values()].some((receive) =>
+  ['waiting', 'receiving', 'checking', 'paused'].includes(receive.state));
+
+async function syncWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  if (activeIncoming() && document.visibilityState === 'visible') {
+    if (!screenWakeLock) {
+      try {
+        screenWakeLock = await navigator.wakeLock.request('screen');
+        screenWakeLock.addEventListener('release', () => { screenWakeLock = null; });
+        log('Screen wake lock active while incoming files are pending.');
+      } catch (cause) {
+        log(`Could not keep the display awake: ${cause?.message || cause}`, 'warning');
+      }
+    }
+  } else if (screenWakeLock) {
+    await screenWakeLock.release().catch(() => {});
+    screenWakeLock = null;
+  }
+}
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text != null) node.textContent = text;
   return node;
+}
+function parseRelayUrls(raw) {
+  const urls = String(raw || '').split(/[\n,]/).map((url) => url.trim()).filter(Boolean);
+  if (!urls.length) return [];
+  if (urls.length > 12) throw new Error('Choose at most 12 relays.');
+  return urls.map((value) => {
+    const url = new URL(value);
+    const localhost = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && localhost)) {
+      throw new Error(`${value} must use wss:// (ws:// is allowed only for localhost).`);
+    }
+    return url.href.replace(/\/$/, '');
+  });
+}
+
+async function probeRelays(urls) {
+  const reachable = await Promise.all(urls.map((url) => new Promise((resolve) => {
+    let settled = false;
+    const socket = new WebSocket(url);
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.close(); } catch {}
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), 8000);
+    socket.addEventListener('open', () => finish(true), { once: true });
+    socket.addEventListener('error', () => finish(false), { once: true });
+  })));
+  return urls.filter((_, index) => reachable[index]);
 }
 
 function log(message, kind = '') {
@@ -208,6 +269,10 @@ function diagnoseConnection(pc) {
 }
 
 function onRoomError(event) {
+  if (event?.code === 'room-full') {
+    error('ROOM_FULL: this is a two-person room, and it already has two participants. Ask the current participants for a new room link.');
+    return;
+  }
   if (event?.code !== 'peer-connect-failed') {
     error(`Connection error: ${event?.message || String(event)}`);
     return;
@@ -223,9 +288,14 @@ function handleConnectionChange(pc) {
   if (!peerId) return;
   for (const receive of state.incoming.values()) {
     if (receive.peerId === peerId && ['waiting', 'receiving', 'checking'].includes(receive.state)) {
-      receive.state = 'failed';
-      receive.message = `${connectionLabel(pc)}. Incomplete data was discarded.`;
-      receive.chunks = [];
+      if (receive.directory && receive.bytes > 0) {
+        receive.state = 'paused';
+        receive.message = `${connectionLabel(pc)}. Keeping the verified-prefix .part file for resume.`;
+      } else {
+        receive.state = 'failed';
+        receive.message = `${connectionLabel(pc)}. Incomplete data was discarded.`;
+        receive.chunks = [];
+      }
     }
   }
   renderIncoming();
@@ -245,14 +315,21 @@ async function ensureDisclosure() {
 
 async function connectRoom() {
   if (state.joined) return;
-  const { roomId, password } = await deriveRoom(state.secret);
+  if (!state.expiresAt || state.expiresAt <= Date.now()) {
+    throw new Error('This room invite expired. Ask for a newly created link.');
+  }
+  const relays = activeRelays();
+  const reachable = await probeRelays(relays);
+  if (!reachable.length) throw new Error(`RELAY_UNREACHABLE: none of the ${relays.length} configured Nostr relays responded within 8 seconds.`);
+  if (reachable.length !== relays.length) log(`${reachable.length}/${relays.length} configured relays are reachable.`, 'warning');
+  const { roomId, password } = await deriveRoom(state.secret, state.expiresAt);
   const library = await loadVerified('trystero-nostr.js');
   state.room = library.joinRoom({
     appId: APP_ID,
     password,
-    maxUsers: 10,
+    maxUsers: 2,
     identity: 'none',
-    relayConfig: { urls: ACTIVE_RELAYS, warnOnRelayFailure: false },
+    relayConfig: { urls: reachable, warnOnRelayFailure: false },
     rtcConfig: { iceServers: DEV.localIce ? [] : [{ urls: DEFAULT_STUN }] },
     rtcPolyfill: TrackedPC,
   }, roomId);
@@ -265,7 +342,7 @@ async function connectRoom() {
   state.selfId = self.peerId;
   state.joined = true;
   showRoom(true);
-  ui.inviteLink.value = `${location.origin}${APP_DIR}#k=${b64u.encode(state.secret)}`;
+  ui.inviteLink.value = `${location.origin}${APP_DIR}${inviteHash({ secret: state.secret, expiresAt: state.expiresAt })}`;
   history.replaceState(null, '', ui.inviteLink.value);
   renderPeople();
   log(`Joined room ${roomId.slice(0, 8)} as ${state.selfId.slice(0, 8)}.`);
@@ -275,7 +352,12 @@ async function enterRoom(create = false) {
   clearError();
   saveSettings();
   if (!(await ensureDisclosure())) return;
-  if (create) state.secret = makeSecret();
+  if (create) {
+    const newInvite = makeInviteSecret();
+    state.secret = newInvite.secret;
+    state.expiresAt = newInvite.expiresAt;
+    state.roomCreatedAt = Date.now();
+  }
   if (!state.secret) {
     error('This invite link is invalid. Ask for a new room link.');
     return;
@@ -295,24 +377,30 @@ function onPeerJoin({ peerId }) {
   log(`Peer ${peerId.slice(0, 8)} connected.`);
   state.peers.set(peerId, { id: peerId, name: `Peer ${peerId.slice(0, 4)}`, path: 'connecting' });
   renderPeople();
-  send(peerId, { type: 'hello', name: myName(), protocol: PROTOCOL });
+  send(peerId, {
+    type: 'hello', name: myName(), protocol: PROTOCOL,
+    sessionId: state.sessionId,
+  });
 }
 
 function onPeerLeave({ peerId }) {
   const peer = state.peers.get(peerId);
   state.peers.delete(peerId);
+  if (peer?.sessionId) state.departedPeers.set(peer.sessionId, peer);
   for (const outgoing of state.outgoing.values()) {
     const target = outgoing.targets.get(peerId);
     if (target && !['verified', 'failed'].includes(target.state)) {
-      target.state = 'failed';
-      target.message = `${peer?.name || 'The peer'} left the room; the incomplete file was discarded.`;
+      target.state = 'paused';
+      target.message = `${peer?.name || 'The peer'} disconnected; waiting to reconnect for resume.`;
     }
   }
   for (const receive of state.incoming.values()) {
     if (receive.peerId === peerId && !['verified', 'failed', 'declined'].includes(receive.state)) {
-      receive.state = 'failed';
-      receive.message = `${peer?.name || 'The sender'} left the room; incomplete data was discarded.`;
-      receive.chunks = [];
+      receive.state = receive.directory && receive.bytes > 0 ? 'paused' : 'failed';
+      receive.message = receive.state === 'paused'
+        ? `${peer?.name || 'The sender'} disconnected; the .part file is ready to resume.`
+        : `${peer?.name || 'The sender'} left the room; incomplete data was discarded.`;
+      if (receive.state === 'failed') receive.chunks = [];
     }
   }
   renderPeople();
@@ -320,12 +408,45 @@ function onPeerLeave({ peerId }) {
   renderOutgoing();
 }
 
+function migratePeer(oldPeerId, newPeerId, sessionId) {
+  const oldPeer = state.departedPeers.get(sessionId);
+  if (!oldPeer || oldPeer.id !== oldPeerId) return false;
+  for (const outgoing of state.outgoing.values()) {
+    if (!outgoing.targets.has(oldPeerId)) continue;
+    const target = outgoing.targets.get(oldPeerId);
+    outgoing.targets.delete(oldPeerId);
+    outgoing.targets.set(newPeerId, target);
+  }
+  for (const [key, receive] of [...state.incoming]) {
+    if (receive.peerId !== oldPeerId) continue;
+    state.incoming.delete(key);
+    receive.peerId = newPeerId;
+    state.incoming.set(incomingKey(newPeerId, receive.id), receive);
+  }
+  state.departedPeers.delete(sessionId);
+  return true;
+}
+
 async function onControl(message, context) {
   const peerId = context.peerId;
   if (!message || typeof message !== 'object' || message.protocol && message.protocol !== PROTOCOL) return;
   if (message.type === 'hello') {
     const peer = state.peers.get(peerId);
-    if (peer) peer.name = String(message.name || peer.name).slice(0, 24);
+    if (peer) {
+      peer.name = String(message.name || peer.name).slice(0, 24);
+      peer.sessionId = String(message.sessionId || '');
+      const oldPeer = state.departedPeers.get(peer.sessionId);
+      if (oldPeer && migratePeer(oldPeer.id, peerId, peer.sessionId)) {
+        log(`Reconnected to ${peer.name}; folder-backed transfers can resume.`);
+        for (const receive of state.incoming.values()) {
+          if (receive.peerId === peerId && receive.state === 'paused' && receive.directory) {
+            receive.state = 'waiting';
+            receive.message = `resuming from ${formatBytes(receive.bytes)}`;
+            send(peerId, { type: 'resume', fileId: receive.id, offset: receive.bytes });
+          }
+        }
+      }
+    }
     renderPeople();
     return;
   }
@@ -362,7 +483,7 @@ async function onControl(message, context) {
     if (!target) return;
     target.state = 'queued';
     target.message = 'accepted; waiting to send';
-    state.jobs.push({ peerId, fileId: message.fileId });
+    state.jobs.push({ peerId, fileId: message.fileId, offset: 0 });
     renderOutgoing();
     processJobs();
     return;
@@ -388,6 +509,27 @@ async function onControl(message, context) {
     target.state = message.ok ? 'verified' : 'failed';
     target.message = message.ok ? 'verified ✓' : 'receiver SHA-256 mismatch ✗';
     renderOutgoing();
+    return;
+  }
+  if (message.type === 'resume') {
+    const outgoing = state.outgoing.get(message.fileId);
+    const target = outgoing?.targets.get(peerId);
+    if (!outgoing || !target) return;
+    const offset = Number(message.offset);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= outgoing.size || offset % CHUNK_SIZE !== 0) {
+      target.state = 'failed';
+      target.message = 'receiver requested an invalid resume offset';
+      send(peerId, { type: 'cancel', fileId: message.fileId, reason: target.message });
+      renderOutgoing();
+      return;
+    }
+    target.state = 'queued';
+    target.bytes = offset;
+    target.message = `resuming from ${formatBytes(offset)}`;
+    state.jobs = state.jobs.filter((job) => !(job.peerId === peerId && job.fileId === message.fileId));
+    state.jobs.push({ peerId, fileId: message.fileId, offset });
+    renderOutgoing();
+    processJobs();
     return;
   }
   if (message.type === 'cancel') {
@@ -425,13 +567,17 @@ function renderPeople() {
   ui.people.replaceChildren();
   ui.sendTo.replaceChildren();
   ui.sendTo.append(new Option('Everyone', 'all'));
+  const self = element('div', 'person self');
+  self.append(element('strong', '', `${myName()} (you)`),
+    element('span', 'dim', `${state.selfId?.slice(0, 8) || 'joining'} · ${state.peers.size + 1}/2 people`));
+  ui.people.append(self);
   if (!state.peers.size) {
-    ui.people.append(element('span', 'dim', 'You are here. Invite someone to start.'));
+    ui.people.append(element('span', 'dim', 'Invite one person. Rooms are limited to two participants.'));
     return;
   }
   for (const peer of state.peers.values()) {
     const row = element('div', 'person');
-    row.append(element('strong', '', peer.name), element('span', 'dim', `${peer.id.slice(0, 8)} · ${peer.path || 'connecting'} · unverified name`));
+    row.append(element('strong', '', peer.name), element('span', 'dim', `${(peer.sessionId || peer.id).slice(0, 8)} · ${peer.path || 'connecting'} · unverified name`));
     ui.people.append(row);
     ui.sendTo.append(new Option(peer.name, peer.id));
   }
@@ -616,11 +762,13 @@ async function acceptIncoming(receive, directory = null) {
   receive.state = 'waiting';
   receive.message = 'accepted; waiting for bytes';
   receive.bytes = 0;
+  receive.receivedBytes = 0;
   receive.chunks = [];
   receive.hasher = state.sha256.create();
   receive.directory = directory;
   receive.partName = `${receive.saveName}.part`;
   renderIncoming();
+  await syncWakeLock();
   send(receive.peerId, { type: 'accept', fileId: receive.id });
 }
 
@@ -629,6 +777,7 @@ function declineIncoming(receive) {
   receive.message = 'declined';
   send(receive.peerId, { type: 'decline', fileId: receive.id });
   renderIncoming();
+  void syncWakeLock();
 }
 
 function processJobs() {
@@ -681,7 +830,7 @@ async function waitForVerification(target) {
   return target.state === 'verified';
 }
 
-async function transferToPeer({ peerId, fileId }) {
+async function transferToPeer({ peerId, fileId, offset = 0 }) {
   const outgoing = state.outgoing.get(fileId);
   const target = outgoing?.targets.get(peerId);
   if (!outgoing || !target) return;
@@ -690,7 +839,7 @@ async function transferToPeer({ peerId, fileId }) {
     target.message = 'opening a dedicated data channel';
     renderOutgoing();
     const channel = await openFileChannel(peerId, fileId);
-    const reader = outgoing.source.stream().getReader();
+    const reader = outgoing.source.slice(offset).stream().getReader();
     let done = false;
     while (!done) {
       await waitForChannelDrain(channel);
@@ -701,6 +850,11 @@ async function transferToPeer({ peerId, fileId }) {
       for (let offset = 0; offset < next.value.byteLength; offset += CHUNK_SIZE) {
         await waitForChannelDrain(channel);
         let chunk = next.value.subarray(offset, Math.min(offset + CHUNK_SIZE, next.value.byteLength));
+        if (DEV.disconnectAfter && target.bytes >= Number(DEV.disconnectAfter) && !target.interrupted) {
+          target.interrupted = true;
+          getPeerConnection(peerId)?.close();
+          throw new Error('Test peer disconnect after configured byte count.');
+        }
         if (DEV.flipFirstByte && target.bytes === 0 && !corruptedTransfers.has(fileId)) {
           chunk = chunk.slice();
           chunk[0] ^= 1;
@@ -723,9 +877,8 @@ async function transferToPeer({ peerId, fileId }) {
     channel.close();
   } catch (cause) {
     if (!['verified', 'failed'].includes(target.state)) {
-      target.state = 'failed';
-      target.message = cause?.message || String(cause);
-      send(peerId, { type: 'cancel', fileId, reason: target.message });
+      target.state = 'paused';
+      target.message = cause?.message || 'Interrupted; waiting for the receiver to request resume.';
     }
     renderOutgoing();
   }
@@ -733,6 +886,24 @@ async function transferToPeer({ peerId, fileId }) {
 
 function findIncoming(peerId, fileId) {
   return state.incoming.get(incomingKey(peerId, fileId));
+}
+
+async function pauseIncomingForResume(receive, pc) {
+  if (!receive.directory || receive.bytes >= receive.size || receive.bytes % CHUNK_SIZE !== 0) return false;
+  receive.state = 'paused';
+  receive.message = `waiting to resume from ${formatBytes(receive.bytes)}`;
+  await receive.writeQueue;
+  await receive.writer?.close().catch(() => {});
+  receive.writer = null;
+  receive.writerSeek = null;
+  renderIncoming();
+  void syncWakeLock();
+  if (pc.connectionState === 'connected' && state.peers.has(receive.peerId)) {
+    receive.state = 'waiting';
+    receive.message = `resuming from ${formatBytes(receive.bytes)}`;
+    send(receive.peerId, { type: 'resume', fileId: receive.id, offset: receive.bytes });
+  }
+  return true;
 }
 
 function onIncomingDataChannel(pc, channel) {
@@ -752,29 +923,45 @@ function onIncomingDataChannel(pc, channel) {
   channel.addEventListener('message', (event) => {
     const bytes = event.data instanceof ArrayBuffer ? event.data : event.data?.buffer;
     if (!(bytes instanceof ArrayBuffer)) return failReceive(receive, 'Received an unsupported chunk format.');
-    if (receive.bytes + bytes.byteLength > receive.size) {
+    if (receive.receivedBytes + bytes.byteLength > receive.size) {
       channel.close();
       return failReceive(receive, 'The sender sent more bytes than the accepted file size.');
     }
     const chunk = new Uint8Array(bytes);
     receive.hasher.update(chunk);
-    receive.bytes += chunk.byteLength;
+    receive.receivedBytes += chunk.byteLength;
     receive.lastByteAt = Date.now();
     receive.writeQueue = receive.writeQueue.then(async () => {
       if (receive.directory) {
         receive.partHandle ??= await receive.directory.getFileHandle(receive.partName, { create: true });
-        receive.writer ??= await receive.partHandle.createWritable();
+        receive.writer ??= await receive.partHandle.createWritable({ keepExistingData: receive.bytes > chunk.byteLength });
+        if (receive.writer && receive.bytes > chunk.byteLength && receive.writerSeek == null) {
+          await receive.writer.seek?.(receive.bytes);
+          receive.writerSeek = receive.bytes;
+        }
         await receive.writer.write(chunk);
       } else {
         receive.chunks.push(chunk.slice());
       }
+      receive.bytes += chunk.byteLength;
+      renderIncoming();
+      void syncWakeLock();
     }).catch((cause) => failReceive(receive, `Could not write the file: ${cause?.message || cause}`));
+    if (receive.receivedBytes === receive.size) {
+      receive.writeQueue.then(() => finishReceive(receive)).catch((cause) => failReceive(receive, cause?.message || String(cause)));
+    }
     renderIncoming();
-    if (receive.bytes === receive.size) finishReceive(receive).catch((cause) => failReceive(receive, cause?.message || String(cause)));
   });
-  channel.addEventListener('error', () => failReceive(receive, `The file data channel failed. ${connectionLabel(pc)}.`));
-  channel.addEventListener('close', () => {
-    if (receive.state === 'receiving') failReceive(receive, `The file channel closed before every byte arrived (${receive.bytes}/${receive.size}).`);
+  channel.addEventListener('error', async () => {
+    if (!await pauseIncomingForResume(receive, pc)) {
+      failReceive(receive, `The file data channel failed. ${connectionLabel(pc)}.`);
+    }
+  });
+  channel.addEventListener('close', async () => {
+    if (receive.state !== 'receiving') return;
+    if (!await pauseIncomingForResume(receive, pc)) {
+      failReceive(receive, `The file channel closed before every byte arrived (${receive.bytes}/${receive.size}).`);
+    }
   });
   renderIncoming();
 }
@@ -823,6 +1010,7 @@ async function finishReceive(receive) {
       : 'The file arrived damaged and was discarded.';
     send(receive.peerId, { type: 'verify', fileId: receive.id, ok: false });
     renderIncoming();
+    void syncWakeLock();
     return;
   }
   if (receive.directory) await finalizePart(receive);
@@ -834,6 +1022,7 @@ async function finishReceive(receive) {
   receive.message = 'verified ✓';
   send(receive.peerId, { type: 'verify', fileId: receive.id, ok: true });
   renderIncoming();
+  void syncWakeLock();
 }
 
 function failReceive(receive, message) {
@@ -844,6 +1033,7 @@ function failReceive(receive, message) {
   receive.writer?.abort().catch(() => {});
   send(receive.peerId, { type: 'verify', fileId: receive.id, ok: false });
   renderIncoming();
+  void syncWakeLock();
 }
 
 function saveBlob(receive) {
@@ -900,13 +1090,19 @@ function runConsole(command) {
       memoryLimit: MEMORY_LIMIT,
       streaming: !!window.showDirectoryPicker,
     }, null, 2));
-  } else if (name === '/relays') {
-    log(ACTIVE_RELAYS.join('\n'));
+  } else if (name.startsWith('/relays')) {
+    if (command === '/relays reset') {
+      settings.relays = [];
+      saveSettings();
+      log('Restored the default relay set. Rejoin to apply it.');
+      return;
+    }
+    log(activeRelays().join('\n'));
   } else if (name === '/egress') {
     log([
       'DECLARED HOSTS',
       location.host,
-      ...ACTIVE_RELAYS.map((url) => new URL(url).host),
+      ...activeRelays().map((url) => new URL(url).host),
       ...(!DEV.localIce ? ['stun.cloudflare.com:3478'] : []),
       '<room peers>',
       '',
@@ -967,6 +1163,20 @@ function initializeEvents() {
     setTimeout(() => { $('#copyLink').textContent = 'Copy link'; }, 1200);
   });
   $('#showQr').addEventListener('click', renderQr);
+  $('#networkSettings').addEventListener('click', () => {
+    $('#relayUrls').value = activeRelays().join('\n');
+    $('#networkDialog').showModal();
+  });
+  $('#saveRelays').addEventListener('click', (event) => {
+    try {
+      settings.relays = parseRelayUrls($('#relayUrls').value);
+      saveSettings();
+      log(settings.relays.length ? `Saved ${settings.relays.length} custom relays. Rejoin to apply them.` : 'Restored the default relay set. Rejoin to apply it.');
+    } catch (cause) {
+      event.preventDefault();
+      error(cause?.message || String(cause));
+    }
+  });
   $('#newRoom').addEventListener('click', () => $('#newRoomDialog').showModal());
   $('#confirmNewRoom').addEventListener('click', async () => {
     await cleanupRoom();
@@ -1026,13 +1236,22 @@ async function cleanupRoom({ notify = true } = {}) {
   state.room = null;
   state.action = null;
   state.selfId = null;
-  localStorage.removeItem(SETTINGS_KEY);
+  if (screenWakeLock) {
+    await screenWakeLock.release().catch(() => {});
+    screenWakeLock = null;
+  }
+  settings.name = '';
+  saveSettings();
 }
 
 addEventListener('beforeunload', (event) => {
   if (!state.joined || state.cancelled) return;
   event.preventDefault();
   event.returnValue = '';
+});
+
+addEventListener('visibilitychange', () => {
+  void syncWakeLock();
 });
 
 addEventListener('pagehide', () => {

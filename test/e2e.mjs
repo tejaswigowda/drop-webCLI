@@ -49,13 +49,30 @@ try {
       'media.peerconnection.ice.obfuscate_host_addresses': false,
       'media.peerconnection.ice.default_address_only': false,
     } });
-  async function open({ flipFirstByte = false } = {}) {
+  async function open({ flipFirstByte = false, relayUrls } = {}) {
     const context = await browser.newContext();
     contexts.push(context);
-    await context.addInitScript(({ relayUrl, flipFirstByte }) => {
+    await context.addInitScript(({ relayUrl, relayUrls, flipFirstByte }) => {
       localStorage.setItem('drop.ipNotice.1', '1');
-      localStorage.setItem('drop.dev', JSON.stringify({ relays: [relayUrl], localIce: true, ...(flipFirstByte ? { flipFirstByte: true } : {}) }));
-    }, { relayUrl: relay.url, flipFirstByte });
+      window.__wakeLocks = { requested: 0, released: 0 };
+      Object.defineProperty(navigator, 'wakeLock', {
+        configurable: true,
+        value: {
+          request: async () => {
+            window.__wakeLocks.requested++;
+            return {
+              addEventListener() {},
+              release: async () => { window.__wakeLocks.released++; },
+            };
+          },
+        },
+      });
+      localStorage.setItem('drop.dev', JSON.stringify({
+        relays: relayUrls || [relayUrl],
+        localIce: true,
+        ...(flipFirstByte ? { flipFirstByte: true } : {}),
+      }));
+    }, { relayUrl: relay.url, relayUrls, flipFirstByte });
     const page = await context.newPage();
     page.on('pageerror', (cause) => check('no page error', false, cause.message));
     return page;
@@ -69,7 +86,7 @@ try {
   await sender.click('#createRoom');
   await sender.waitForSelector('#roomScreen:not(.hidden)', { timeout: 30_000 });
   const invite = await sender.inputValue('#inviteLink');
-  check('DP1 invite secret lives in fragment', /#k=[-_A-Za-z0-9]{22}$/.test(invite), invite);
+  check('DP1 invite secret lives in fragment and is time-boxed', /#k=[-_A-Za-z0-9]{22}&e=\d+$/.test(invite), invite);
 
   const receiver = await open();
   receiver.on('request', (request) => requests.push(request.url()));
@@ -97,6 +114,23 @@ try {
     await until(async () => /Alice/.test(await receiver.textContent('#people')), 10_000));
   await sender.waitForFunction(() => document.querySelector('#people')?.textContent.includes('Bob'));
 
+  const third = await open();
+  await third.goto(invite);
+  await third.fill('#displayName', 'Mallory');
+  await third.click('#createRoom');
+  check('two-person policy visibly refuses a third participant', await until(async () =>
+    /ROOM_FULL|two-person room/.test(await third.textContent('#errorBanner')), 20_000));
+  await third.context().close();
+
+  if (browserName === 'chromium' && !corrupt) {
+    const noRelay = await open({ relayUrls: ['ws://127.0.0.1:1'] });
+    await noRelay.goto(origin);
+    await noRelay.click('#createRoom');
+    check('no reachable relay produces a named error', await until(async () =>
+      /RELAY_UNREACHABLE/.test(await noRelay.textContent('#errorBanner')), 12_000));
+    await noRelay.context().close();
+  }
+
   await sender.setInputFiles('#fileInput', [first, second]);
   await receiver.waitForSelector('[data-action^="accept-"]', { timeout: 45_000 });
   check('DP7 hashes are offered only after preparation',
@@ -114,6 +148,8 @@ try {
     /1 incoming file waiting/.test(await receiver.textContent('#incomingAlert'))
       && (await receiver.title()).startsWith('(1)'));
   await receiver.locator('[data-action^="accept-"]').click();
+  check('receiving requests a screen wake lock', await until(async () =>
+    await receiver.evaluate(() => window.__wakeLocks.requested > 0), 10_000));
 
   if (corrupt) {
     const receiverFailed = await until(async () => (await receiver.locator('#incoming .status.bad').count()) === 2, 45_000);
@@ -128,6 +164,8 @@ try {
     check(`DP6–DP10 ${browserName} chunks transfer and both sides verify SHA-256`, receiverVerified && senderVerified,
       `${await receiver.textContent('#incoming')} | ${await sender.textContent('#outgoing')}`);
     check('DP15 received content has Save buttons and never auto-downloads', await receiver.getByRole('button', { name: 'Save' }).count() === 2);
+    check('screen wake lock is released after incoming transfers finish', await until(async () =>
+      await receiver.evaluate(() => window.__wakeLocks.released > 0), 10_000));
 
     await receiver.setInputFiles('#fileInput', reply);
     await sender.waitForSelector('[data-action^="accept-"]', { timeout: 30_000 });
@@ -137,7 +175,7 @@ try {
       /verified ✓/.test(await sender.textContent('#incoming')) && /verified ✓/.test(await receiver.textContent('#outgoing')), 45_000));
   }
 
-  const secret = invite.split('#k=')[1];
+  const secret = invite.match(/#k=([-_A-Za-z0-9]{22})/)?.[1];
   check('DP1 secret appears in no request', requests.every((url) => !url.includes(secret)));
   const frames = relay.frames.join('\n');
   check('DP2 relay frames carry neither secret nor plaintext SDP',

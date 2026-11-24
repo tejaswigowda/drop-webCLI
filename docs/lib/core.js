@@ -9,6 +9,7 @@ export const HIGH_WATER_MARK = 4 * 1024 * 1024;
 export const LOW_WATER_MARK = 1024 * 1024;
 export const STALL_MS = 15_000;
 export const MAX_ACTIVE_RECEIVERS = 3;
+export const INVITE_LIFETIME_MS = 60 * 60 * 1000;
 export const RELAYS = [
   'wss://no.str.cr',
   'wss://relay.wavlake.com',
@@ -45,11 +46,13 @@ export function hex(bytes) {
 }
 
 export function parseInvite(hash) {
-  const match = /^#k=([-A-Za-z0-9_]{22})$/.exec(hash);
+  const match = /^#k=([-A-Za-z0-9_]{22})&e=([0-9]+)$/.exec(hash);
   if (!match || !WEB_UR_SAFE.test(match[1])) return null;
+  const expiresAt = Number(match[2]);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) return null;
   try {
     const secret = b64u.decode(match[1]);
-    return secret.length === 16 ? secret : null;
+    return secret.length === 16 ? { secret, expiresAt } : null;
   } catch {
     return null;
   }
@@ -59,6 +62,14 @@ export function makeSecret() {
   return crypto.getRandomValues(new Uint8Array(16));
 }
 
+export function makeInviteSecret() {
+  return { secret: makeSecret(), expiresAt: Date.now() + INVITE_LIFETIME_MS };
+}
+
+export function inviteHash(invite) {
+  return `#k=${b64u.encode(invite.secret)}&e=${invite.expiresAt}`;
+}
+
 export function concat(first, second) {
   const output = new Uint8Array(first.length + second.length);
   output.set(first);
@@ -66,11 +77,12 @@ export function concat(first, second) {
   return output;
 }
 
-export async function deriveRoom(secret) {
-  const topic = new Uint8Array(await crypto.subtle.digest('SHA-256', concat(enc.encode(TOPIC_LABEL), secret)));
+export async function deriveRoom(secret, expiresAt) {
+  const expiry = enc.encode(`:${expiresAt}`);
+  const topic = new Uint8Array(await crypto.subtle.digest('SHA-256', concat(enc.encode(TOPIC_LABEL), concat(secret, expiry))));
   const key = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveBits']);
   const password = new Uint8Array(await crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(), info: enc.encode(SDP_LABEL) },
+    { name: 'HKDF', hash: 'SHA-256', salt: expiry, info: enc.encode(SDP_LABEL) },
     key,
     256,
   ));

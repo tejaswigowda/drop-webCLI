@@ -7,7 +7,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob:; style-src 'self'; connect-src 'self' wss: ws://localhost:* ws://127.0.0.1:*; img-src 'self' data:; worker-src 'self'; base-uri 'none'; form-action 'none'">
   <title>drop-webCLI</title>
   <meta name="description" content="Create a room and exchange SHA-256 verified files directly between browsers.">
-  <link rel="stylesheet" href="style.css?v=0.2.4">
+  <link rel="stylesheet" href="style.css?v=0.2.6">
 </head>
 <body>
   <header>
@@ -30,6 +30,9 @@
       </button>
       <button id="consoleToggle" class="header-icon" type="button" aria-pressed="false" aria-label="Open console" title="Open console">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 9 3 3-3 3M13 15h3"/><rect x="3" y="4" width="18" height="16" rx="3"/></svg>
+      </button>
+      <button id="networkSettings" class="header-icon" type="button" aria-label="Network settings" title="Network settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9 7 7M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
       </button>
       <a class="header-icon" href="https://github.com/tejaswigowda/drop-webCLI" target="_blank" rel="noreferrer" aria-label="View source on GitHub" title="View source on GitHub">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.2 0 6.5-1.6 6.5-7A5.5 5.5 0 0 0 19 3.8 5.2 5.2 0 0 0 18.9 0S17.7-.4 15 1.5a13.6 13.6 0 0 0-7 0C5.3-.4 4.1 0 4.1 0A5.2 5.2 0 0 0 4 3.8 5.5 5.5 0 0 0 2.5 7.6c0 5.4 3.3 7 6.5 7A4.8 4.8 0 0 0 8 18v4"/><path d="M8 19c-3 .9-3-1.5-4.5-2"/></svg>
@@ -65,7 +68,7 @@
       </div>
 
       <div class="invite room-panel">
-        <label for="inviteLink">Invite people to this room</label>
+        <label for="inviteLink">Invite one person · link expires in 60 minutes</label>
         <div class="copy-row"><input id="inviteLink" readonly><button id="copyLink" class="primary">Copy link</button><button id="showQr">QR</button></div>
         <p class="keep">Keep this tab open while files are being exchanged.</p>
       </div>
@@ -115,8 +118,8 @@
   <dialog id="notice">
     <form method="dialog">
       <h2>People in this room can see your IP address</h2>
-      <p>Joining uses public Nostr relays for encrypted WebRTC setup. Accepted files go directly to their receiver through the connection. A relay and STUN server still see network metadata such as IP addresses.</p>
-      <p>Only continue if you expect the people in this room. Display names are not verified.</p>
+      <p>Joining uses public Nostr relays for encrypted WebRTC setup. Relays store and rebroadcast connection metadata, including IP addresses. File contents never pass through the relays.</p>
+      <p>Only continue if you expect the one other person in this two-person room. The link is a key: anyone holding it before expiry can try to join. Display names are not verified.</p>
       <button value="decline">Cancel</button>
       <button id="noticeAccept" value="accept" class="primary">Continue</button>
     </form>
@@ -138,6 +141,19 @@
     </form>
   </dialog>
 
+  <dialog id="networkDialog">
+    <h2>Network relays</h2>
+    <p>These public Nostr relays carry encrypted WebRTC setup metadata. They store and rebroadcast events, so use relays whose operators you accept.</p>
+    <label class="field">Relay WebSocket URLs, one per line
+      <textarea id="relayUrls" rows="7" spellcheck="false"></textarea>
+    </label>
+    <p class="dim">Leave the field empty to restore the default relay set. Changes apply after rejoining the room.</p>
+    <form method="dialog">
+      <button value="cancel">Cancel</button>
+      <button id="saveRelays" value="save" class="primary">Save</button>
+    </form>
+  </dialog>
+
   <dialog id="leaveRoomDialog">
     <h2>Leave this room?</h2>
     <p>You will be disconnected from everyone in the room. All transfer data, including files written by this page, will be deleted. Downloaded copies already saved outside this page cannot be deleted.</p>
@@ -147,6 +163,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="app.js?v=0.2.4"></script>
+  <script type="module" src="app.js?v=0.2.6"></script>
 </body>
 </html>

@@ -2,24 +2,29 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   MAX_FILES, TOPIC_LABEL, b64u, deriveRoom, executableWarning, formatBytes,
-  parseInvite, sanitizeName, validateManifest,
+  inviteHash, parseInvite, sanitizeName, validateManifest,
 } from '../docs/lib/core.js';
 
 test('invite secret is fragment-only and exactly 128 bits', () => {
   const secret = Uint8Array.from({ length: 16 }, (_, i) => i);
-  assert.deepEqual(parseInvite(`#k=${b64u.encode(secret)}`), secret);
+  const expiresAt = Date.now() + 60_000;
+  assert.deepEqual(parseInvite(inviteHash({ secret, expiresAt })), { secret, expiresAt });
   assert.equal(parseInvite('#k=short'), null);
   assert.equal(parseInvite('#k=AAAAAAAAAAAAAAAAAAAAAA=='), null);
+  assert.equal(parseInvite(`#k=${b64u.encode(secret)}`), null);
 });
 
 test('drop room derivation is isolated from rtc-webCLI labels', async () => {
   assert.equal(TOPIC_LABEL, 'drop-webCLI/v1/topic');
   const secret = Uint8Array.from({ length: 16 }, (_, i) => 255 - i);
-  const first = await deriveRoom(secret);
-  const second = await deriveRoom(Uint8Array.from(secret, (byte) => byte ^ 1));
+  const first = await deriveRoom(secret, 1234);
+  const second = await deriveRoom(Uint8Array.from(secret, (byte) => byte ^ 1), 1234);
+  const changedExpiry = await deriveRoom(secret, 5678);
   assert.match(first.roomId, /^[0-9a-f]{64}$/);
   assert.notEqual(first.roomId, second.roomId);
   assert.notEqual(first.password, second.password);
+  assert.notEqual(first.roomId, changedExpiry.roomId, 'changing expiry must derive a different room');
+  assert.notEqual(first.password, changedExpiry.password, 'changing expiry must change the room key');
 });
 
 test('file names strip paths, controls, dots, reserved names and collisions', () => {
