@@ -63,7 +63,9 @@ Vendored dependencies are regenerated and hash-pinned with:
 npm run vendor
 ```
 
-The page refuses to execute a vendored module whose bytes do not match the SHA-256 embedded in the app. It makes no script or asset request to a CDN.
+The page refuses to execute a vendored library whose bytes do not match the SHA-256 embedded in the app. It makes no script or asset request to a CDN.
+
+The shared transport is [only-connect](https://github.com/tejaswigowda/only-connect.js). It is vendored as `docs/lib/only-connect.<hash>.js`; the hash in the filename and the import map in `docs/index.html` are the lock file, and the page's CSP carries the hash of that inline map. `npm run vendor` copies it from `node_modules/only-connect` (a `file:../only-connect.js` link, which also lets the Node unit tests resolve it) and rewrites the import map and CSP hash. Run it again after changing `only-connect.js`. The transport knows nothing about files; manifests, Accept, SHA-256 verification and resume stay in this repository.
 
 The relay set copied from rtc-webCLI (`c47a420`) on 2026-11-23 is:
 
@@ -75,7 +77,7 @@ wss://relay.notoshi.win
 wss://relay.dwadziesciajeden.pl
 ```
 
-Supply custom relays from the header **Network settings** dialog, one `wss://` URL per line. Use **Cancel** to discard edits, or save and rejoin to apply them. Only `wss://` is accepted; `ws://` is allowed for localhost development. At join time every relay is probed for an open WebSocket. If none responds within eight seconds, the app reports `RELAY_UNREACHABLE` rather than remaining in “connecting” indefinitely.
+Supply custom relays from the header **Network settings** dialog, one `wss://` URL per line. Use **Cancel** to discard edits, or save and rejoin to apply them. Only `wss://` is accepted; `ws://` is allowed for localhost development. At join time every relay is probed for an open WebSocket. If none responds within eight seconds, the app reports `NO_RELAY_REACHABLE` rather than remaining in “connecting” indefinitely.
 
 ## Leaving and tab closure
 
@@ -94,7 +96,7 @@ Browsers do not permit a custom message in the close-tab warning, and JavaScript
 
 1. The page creates a 128-bit secret and a one-hour expiry in `#k=…&e=…`. Browsers do not include URL fragments in HTTP requests.
 2. HKDF and a SHA-256 topic derivation bind both the secret and expiry into the room, so editing the timestamp does not join the original room. Different labels isolate drop links from rtc-webCLI rooms.
-3. Trystero over public Nostr relays exchanges encrypted WebRTC setup information. Cloudflare STUN can reveal candidate addresses needed for a direct connection.
+3. Trystero over public Nostr relays exchanges encrypted WebRTC setup information. Cloudflare STUN can reveal candidate addresses needed for a direct connection. Room join, the peer handshake, the wire-version check, the connection tier (`direct-host`, `direct-srflx`, `relayed`, `disconnected`) and backpressure come from only-connect; every failure ends in a named code.
 4. Each outgoing file becomes an independent offer containing its id, original name, size, type, and SHA-256. No file data is sent before the receiver accepts that specific file.
 5. Each accepted file gets a dedicated `RTCDataChannel`. The sender pauses at 4 MiB buffered and resumes at 1 MiB.
 6. Both sides hash while streaming. A received file is not complete, downloadable, or moved from `.part` until the hashes match.
@@ -169,7 +171,9 @@ Opening the page by the computer's reachable LAN IP can make it reachable to ano
 
 The hidden console offers `/peers`, `/path`, `/diag`, `/relays`, `/egress`, `/hash <file>`, and `/about`.
 
-If a peer cannot connect, the page reports one of these named causes using candidate types and address classes only: `NO_CANDIDATES`, `HIDDEN_LOCAL_ADDRESS`, `NETWORK_ISOLATION`, or `NO_DIRECT_PATH`. It intentionally does not display a peer's IP address. The recommended recovery is to try another network, cellular, or a browser/network configuration that permits direct WebRTC. Relay setup failures are reported separately as `RELAY_UNREACHABLE`.
+If a peer cannot connect, the page reports a named cause using candidate types and address classes only. The transport code is `NO_CANDIDATES` or `ICE_FAILED`, and the banner adds the more specific diagnosis: `NO_CANDIDATES`, `HIDDEN_LOCAL_ADDRESS`, `NETWORK_ISOLATION`, or `NO_DIRECT_PATH`. It intentionally does not display a peer's IP address. The recommended recovery is to try another network, cellular, or a browser/network configuration that permits direct WebRTC. Other failures are named too: `NO_RELAY_REACHABLE` (no signalling relay responded), `PROTOCOL_MISMATCH` (the peer runs an incompatible wire version), `ROOM_REFUSED` and `ROOM_FULL`. An empty room is not an error for the person who created it, so `PEER_NOT_FOUND` is only written to the console. The `/peers` and `/path` console commands show each peer's path as `direct` or `relay`.
+
+only-connect makes these failures named and observable; it does not fix client-isolated networks. TURN is the fix, and no TURN server is deployed.
 
 ## Prior art
 
@@ -180,8 +184,8 @@ drop-webCLI differs by making the egress, per-file consent boundary, named failu
 
 ## Licence and vendored code
 
-The project is GPL-3.0-only; see [LICENSE](LICENSE). Vendored browser dependencies retain MIT terms and copyright notices in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): Trystero, `@noble/hashes`, `@noble/secp256k1`, and `qrcode-generator`.
+The project is GPL-3.0-only; see [LICENSE](LICENSE). Vendored browser dependencies retain MIT terms and copyright notices in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): Trystero, `@noble/hashes`, `@noble/secp256k1`, and `qrcode-generator`. `only-connect` is also GPL-3.0-only and was extracted from this repository's transport code.
 
 ## Not built in v1
 
-In-memory resume after reload; folders; text/clipboard transfer; mailbox or sender-offline mode; nearby discovery; or a shared package across webCLI repositories. Sender-offline mode would require storage and therefore is never part of this tool.
+In-memory resume after reload; folders; text/clipboard transfer; mailbox or sender-offline mode; nearby discovery. Sender-offline mode would require storage and therefore is never part of this tool.
