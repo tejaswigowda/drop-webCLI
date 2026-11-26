@@ -1,9 +1,12 @@
 import {
-  APP_ID, CHUNK_SIZE, DEFAULT_STUN, HIGH_WATER_MARK, LOW_WATER_MARK, MAX_ACTIVE_RECEIVERS,
-  MAX_FILES, PROTOCOL, RELAYS, STALL_MS, deriveRoom, executableWarning, formatBytes,
+  APP_ID, CHUNK_SIZE, DEFAULT_STUN, HIGH_WATER_MARK, MAX_ACTIVE_RECEIVERS,
+  MAX_FILES, PROTOCOL, RELAYS, SDP_LABEL, STALL_MS, TOPIC_LABEL, deriveRoom, executableWarning, formatBytes,
   hashFile, hex, inviteHash, makeInviteSecret, parseInvite, sanitizeManifestNames, validateManifest,
   waitForChannelDrain,
 } from './lib/core.js';
+import {
+  CODES, TIERS, connect, diagnoseConnection, observeSockets, parseRelayUrls,
+} from 'only-connect';
 
 const PINS = /*PINS*/{"trystero-nostr.js":{"version":"0.27.0","package":"@trystero-p2p/nostr","sha256":"d26013f7ecae563f4fcdbf7dece219cfdb5f2d3efc2caff32df9a768d5066fc6"},"qrcode.js":{"version":"1.5.2","package":"qrcode-generator","sha256":"065509cfd450f89dbffccc8e37d16f5cb03099aef7c36ab2a23d27611bd97b03"},"sha256.js":{"version":"2.0.1","package":"@noble/hashes","sha256":"d1cc9098f317cf4c5c1652090f680cd4303a9854e345845199ccdae64269c79e"}}/*END-PINS*/;
 const VERSION = '0.2.9';
@@ -43,8 +46,7 @@ const activeRelays = () => Array.isArray(DEV.relays) && DEV.relays.length
 const invite = parseInvite(location.hash);
 
 const state = {
-  room: null,
-  action: null,
+  conn: null,
   selfId: null,
   secret: invite?.secret || null,
   expiresAt: invite?.expiresAt || null,
@@ -60,8 +62,7 @@ const state = {
   cancelled: false,
   sessionId: crypto.randomUUID(),
 };
-const allPCs = new Set();
-const observedSockets = new Set();
+const observedSockets = observeSockets();
 const corruptedTransfers = new Set();
 const libCache = {};
 const consoleLines = [];
@@ -98,38 +99,6 @@ function element(tag, className, text) {
   if (text != null) node.textContent = text;
   return node;
 }
-function parseRelayUrls(raw) {
-  const urls = String(raw || '').split(/[\n,]/).map((url) => url.trim()).filter(Boolean);
-  if (!urls.length) return [];
-  if (urls.length > 12) throw new Error('Choose at most 12 relays.');
-  return urls.map((value) => {
-    const url = new URL(value);
-    const localhost = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && localhost)) {
-      throw new Error(`${value} must use wss:// (ws:// is allowed only for localhost).`);
-    }
-    return url.href.replace(/\/$/, '');
-  });
-}
-
-async function probeRelays(urls) {
-  const reachable = await Promise.all(urls.map((url) => new Promise((resolve) => {
-    let settled = false;
-    const socket = new WebSocket(url);
-    const finish = (ok) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { socket.close(); } catch {}
-      resolve(ok);
-    };
-    const timer = setTimeout(() => finish(false), 8000);
-    socket.addEventListener('open', () => finish(true), { once: true });
-    socket.addEventListener('error', () => finish(false), { once: true });
-  })));
-  return urls.filter((_, index) => reachable[index]);
-}
-
 function log(message, kind = '') {
   const line = `[${new Date().toLocaleTimeString()}] ${kind ? `${kind.toUpperCase()}: ` : ''}${message}`;
   consoleLines.push(line);
@@ -175,125 +144,46 @@ async function loadVerified(file) {
   return libCache[file];
 }
 
-const NativeWebSocket = globalThis.WebSocket;
-if (NativeWebSocket) {
-  globalThis.WebSocket = class ObservedWebSocket extends NativeWebSocket {
-    constructor(url, ...args) {
-      try { observedSockets.add(new URL(url).host); } catch {}
-      super(url, ...args);
-    }
-  };
+function connectionLabel(status) {
+  return `Connection ${status?.connection || 'closed'}${status ? ` / ICE ${status.ice}` : ''}`;
 }
 
-class TrackedPC extends RTCPeerConnection {
-  constructor(config) {
-    super(config);
-    allPCs.add(this);
-    this._localCandidates = [];
-    this._remoteCandidates = [];
-    this.addEventListener('icecandidate', (event) => {
-      if (event.candidate?.candidate) this._localCandidates.push(event.candidate.candidate);
-    });
-    this.addEventListener('datachannel', (event) => onIncomingDataChannel(this, event.channel));
-    this.addEventListener('connectionstatechange', () => {
-      if (this.connectionState === 'closed') allPCs.delete(this);
-      if (['failed', 'disconnected', 'closed'].includes(this.connectionState)) handleConnectionChange(this);
-    });
-  }
-  close() {
-    allPCs.delete(this);
-    return super.close();
-  }
-  get ondatachannel() { return this.trysteroOnDataChannel || null; }
-  set ondatachannel(handler) {
-    this.trysteroOnDataChannel = typeof handler === 'function' ? handler : null;
-    super.ondatachannel = handler ? (event) => {
-      if (!event.channel.label.startsWith('drop:')) handler.call(this, event);
-    } : null;
-  }
-  addIceCandidate(candidate, ...rest) {
-    if (candidate?.candidate) this._remoteCandidates.push(candidate.candidate);
-    return super.addIceCandidate(candidate, ...rest);
+function onConnectError(failure) {
+  switch (failure.code) {
+    case CODES.PEER_LEFT:
+      return;
+    case CODES.PEER_NOT_FOUND:
+      log(`${failure.message} Waiting for someone to join.`);
+      return;
+    case CODES.ROOM_REFUSED:
+      if (failure.detail?.reason === 'room-full') {
+        error('ROOM_FULL: this room has reached its visible 10-participant limit. Ask the participants for a new room link.');
+      } else {
+        error(`ROOM_REFUSED: ${failure.message}`);
+      }
+      return;
+    case CODES.PROTOCOL_MISMATCH:
+      error(`PROTOCOL_MISMATCH: ${failure.message} One of you needs a newer or older copy of the app.`);
+      return;
+    case CODES.NO_CANDIDATES:
+    case CODES.ICE_FAILED:
+      error(`Couldn't connect to ${failure.peerId ? peerName(failure.peerId) : 'a participant'}. ${failure.message} [${failure.detail?.diagnosis || failure.code}]`);
+      return;
+    default:
+      error(`Connection error: ${failure.code}: ${failure.message}`);
   }
 }
 
-function peerIdForConnection(pc) {
-  if (!state.room) return null;
-  for (const [peerId, peer] of Object.entries(state.room.getPeers())) {
-    if (peer.connection === pc) return peerId;
-  }
-  return null;
-}
-
-function getPeerConnection(peerId) {
-  return state.room?.getPeers()?.[peerId]?.connection || null;
-}
-
-function connectionLabel(pc) {
-  return `Connection ${pc?.connectionState || 'closed'}${pc ? ` / ICE ${pc.iceConnectionState}` : ''}`;
-}
-
-function candidateSummary(line) {
-  const fields = String(line).replace(/^a=/, '').split(' ');
-  const type = /\btyp (\w+)/.exec(line)?.[1] || 'unknown';
-  const address = fields[4] || '';
-  let addressClass;
-  if (type === 'relay') addressClass = 'relay';
-  else if (address.endsWith('.local')) addressClass = 'mdns';
-  else if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|fe80:|fc|fd)/i.test(address)) addressClass = 'private';
-  else addressClass = 'public';
-  return { type, addressClass };
-}
-
-function diagnoseConnection(pc) {
-  const local = pc?._localCandidates.map(candidateSummary) || [];
-  const remote = [
-    ...(pc?.remoteDescription?.sdp.match(/^a=candidate:.*$/gm) || []).map((line) => candidateSummary(line)),
-    ...(pc?._remoteCandidates.map(candidateSummary) || []),
-  ];
-  const host = (items) => items.filter((item) => item.type === 'host');
-  const localMdns = host(local).some((item) => item.addressClass === 'mdns');
-  const remoteMdns = host(remote).some((item) => item.addressClass === 'mdns');
-  const localPrivate = host(local).some((item) => item.addressClass === 'private');
-  const remotePrivate = host(remote).some((item) => item.addressClass === 'private');
-  if (!local.length || !remote.length) {
-    return { code: 'NO_CANDIDATES', text: 'One browser offered no usable connection candidates. A VPN, browser privacy setting, or restrictive network may be blocking WebRTC.' };
-  }
-  if (localMdns || remoteMdns) {
-    return { code: 'HIDDEN_LOCAL_ADDRESS', text: 'One browser hid a same-network address behind an mDNS name. Try another browser, disable the browser’s WebRTC mDNS hiding for this test, or use a cellular network.' };
-  }
-  if (localPrivate && remotePrivate) {
-    return { code: 'NETWORK_ISOLATION', text: 'Both devices offered local-network addresses, but the network did not let them connect. Guest Wi-Fi, client isolation, a VPN, or a device firewall may be keeping them apart. Try cellular or a different network.' };
-  }
-  return { code: 'NO_DIRECT_PATH', text: 'The browsers could not find a direct network path. Try cellular or another network. No TURN relay is configured, so this version cannot cross every NAT or firewall.' };
-}
-
-function onRoomError(event) {
-  if (event?.code === 'room-full') {
-    error('ROOM_FULL: this room has reached its visible 10-participant limit. Ask the participants for a new room link.');
-    return;
-  }
-  if (event?.code !== 'peer-connect-failed') {
-    error(`Connection error: ${event?.message || String(event)}`);
-    return;
-  }
-  const pc = [...allPCs].find((item) => item.connectionState === 'failed' || item.iceConnectionState === 'failed');
-  const diagnosis = diagnoseConnection(pc);
-  const who = peerName(event.peerId);
-  error(`Couldn't connect to ${who}. ${diagnosis.text} [${diagnosis.code}]`);
-}
-
-function handleConnectionChange(pc) {
-  const peerId = peerIdForConnection(pc);
-  if (!peerId) return;
+function handleConnectionChange(peerId) {
+  const label = connectionLabel(state.conn?.getStatus(peerId));
   for (const receive of state.incoming.values()) {
     if (receive.peerId === peerId && ['waiting', 'receiving', 'checking'].includes(receive.state)) {
       if (receive.directory && receive.bytes > 0) {
         receive.state = 'paused';
-        receive.message = `${connectionLabel(pc)}. Keeping the verified-prefix .part file for resume.`;
+        receive.message = `${label}. Keeping the verified-prefix .part file for resume.`;
       } else {
         receive.state = 'failed';
-        receive.message = `${connectionLabel(pc)}. Incomplete data was discarded.`;
+        receive.message = `${label}. Incomplete data was discarded.`;
         receive.chunks = [];
       }
     }
@@ -319,33 +209,35 @@ async function connectRoom() {
     throw new Error('This room invite expired. Ask for a newly created link.');
   }
   const relays = activeRelays();
-  const reachable = await probeRelays(relays);
-  if (!reachable.length) throw new Error(`RELAY_UNREACHABLE: none of the ${relays.length} configured Nostr relays responded within 8 seconds.`);
-  if (reachable.length !== relays.length) log(`${reachable.length}/${relays.length} configured relays are reachable.`, 'warning');
-  const { roomId, password } = await deriveRoom(state.secret, state.expiresAt);
-  const library = await loadVerified('trystero-nostr.js');
-  state.room = library.joinRoom({
-    appId: APP_ID,
-    password,
-    maxUsers: 10,
-    identity: 'none',
-    relayConfig: { urls: reachable, warnOnRelayFailure: false },
-    rtcConfig: { iceServers: DEV.localIce ? [] : [{ urls: DEFAULT_STUN }] },
-    rtcPolyfill: TrackedPC,
-  }, roomId);
-  state.action = state.room.makeAction('drop-room-v2');
-  state.action.onMessage(onControl);
-  state.room.onPeerJoin(onPeerJoin);
-  state.room.onPeerLeave(onPeerLeave);
-  state.room.onError(onRoomError);
-  const self = await state.room.getSelf();
-  state.selfId = self.peerId;
+  try {
+    state.conn = await connect({
+      library: await loadVerified('trystero-nostr.js'),
+      secret: state.secret,
+      expiresAt: state.expiresAt,
+      appId: APP_ID,
+      topicLabel: TOPIC_LABEL,
+      sdpLabel: SDP_LABEL,
+      config: { relays, stun: DEV.localIce ? [] : [DEFAULT_STUN], maxPeers: 10 },
+    });
+  } catch (cause) {
+    if (cause.code === CODES.NO_RELAY_REACHABLE) throw new Error(`NO_RELAY_REACHABLE: none of the ${relays.length} configured Nostr relays responded within 8 seconds.`);
+    throw cause;
+  }
+  const { conn } = state;
+  if (conn.relays.length !== relays.length) log(`${conn.relays.length}/${relays.length} configured relays are reachable.`, 'warning');
+  conn.on('message', ({ peerId, data }) => onControl(data, { peerId }));
+  conn.on('peer', onPeerJoin);
+  conn.on('peer-left', onPeerLeave);
+  conn.on('tier', onTier);
+  conn.on('error', onConnectError);
+  conn.onChannel(onIncomingDataChannel);
+  state.selfId = conn.selfId;
   state.joined = true;
   showRoom(true);
   ui.inviteLink.value = `${location.origin}${APP_DIR}${inviteHash({ secret: state.secret, expiresAt: state.expiresAt })}`;
   history.replaceState(null, '', ui.inviteLink.value);
   renderPeople();
-  log(`Joined room ${roomId.slice(0, 8)} as ${state.selfId.slice(0, 8)}.`);
+  log(`Joined room ${conn.roomId.slice(0, 8)} as ${state.selfId.slice(0, 8)}.`);
 }
 
 async function enterRoom(create = false) {
@@ -383,20 +275,35 @@ async function enterRoom(create = false) {
 }
 
 function send(peerId, message) {
-  return state.action.send(message, peerId ? { target: peerId } : undefined).catch((cause) => {
+  return state.conn.send(peerId, message).catch((cause) => {
     error(`Could not contact the peer: ${cause?.message || cause}`);
     return false;
   });
 }
 
-function onPeerJoin({ peerId }) {
+function onPeerJoin({ peerId, tier }) {
   log(`Peer ${peerId.slice(0, 8)} connected.`);
-  state.peers.set(peerId, { id: peerId, name: `Peer ${peerId.slice(0, 4)}`, path: 'connecting' });
+  state.peers.set(peerId, { id: peerId, name: `Peer ${peerId.slice(0, 4)}`, path: tier ? pathLabel(tier) : 'connecting' });
   renderPeople();
   send(peerId, {
     type: 'hello', name: myName(), protocol: PROTOCOL,
     sessionId: state.sessionId,
   });
+}
+
+function pathLabel(tier) {
+  if (tier === TIERS.RELAYED) return 'relay';
+  if (tier === TIERS.DISCONNECTED) return 'unknown path';
+  return 'direct';
+}
+
+function onTier({ peerId, tier }) {
+  const peer = state.peers.get(peerId);
+  if (peer) {
+    peer.path = pathLabel(tier);
+    renderPeople();
+  }
+  if (tier === TIERS.DISCONNECTED) handleConnectionChange(peerId);
 }
 
 function onPeerLeave({ peerId }) {
@@ -810,11 +717,9 @@ function processJobs() {
 }
 
 async function openFileChannel(peerId, fileId) {
-  const pc = getPeerConnection(peerId);
-  if (!pc || pc.connectionState !== 'connected') throw new Error('The receiving peer is no longer connected.');
-  const channel = pc.createDataChannel(`drop:${fileId}`);
+  if (state.conn?.getStatus(peerId)?.connection !== 'connected') throw new Error('The receiving peer is no longer connected.');
+  const channel = state.conn.openChannel(peerId, fileId);
   channel.binaryType = 'arraybuffer';
-  channel.bufferedAmountLowThreshold = LOW_WATER_MARK;
   if (channel.readyState === 'open') return channel;
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('The file channel did not open.')), STALL_MS);
@@ -865,7 +770,7 @@ async function transferToPeer({ peerId, fileId, offset = 0 }) {
         let chunk = next.value.subarray(offset, Math.min(offset + CHUNK_SIZE, next.value.byteLength));
         if (DEV.disconnectAfter && target.bytes >= Number(DEV.disconnectAfter) && !target.interrupted) {
           target.interrupted = true;
-          getPeerConnection(peerId)?.close();
+          state.conn.disconnect(peerId);
           throw new Error('Test peer disconnect after configured byte count.');
         }
         if (DEV.flipFirstByte && target.bytes === 0 && !corruptedTransfers.has(fileId)) {
@@ -901,7 +806,7 @@ function findIncoming(peerId, fileId) {
   return state.incoming.get(incomingKey(peerId, fileId));
 }
 
-async function pauseIncomingForResume(receive, pc) {
+async function pauseIncomingForResume(receive) {
   if (!receive.directory || receive.bytes >= receive.size || receive.bytes % CHUNK_SIZE !== 0) return false;
   receive.state = 'paused';
   receive.message = `waiting to resume from ${formatBytes(receive.bytes)}`;
@@ -911,7 +816,7 @@ async function pauseIncomingForResume(receive, pc) {
   receive.writerSeek = null;
   renderIncoming();
   void syncWakeLock();
-  if (pc.connectionState === 'connected' && state.peers.has(receive.peerId)) {
+  if (state.conn?.getStatus(receive.peerId)?.connection === 'connected' && state.peers.has(receive.peerId)) {
     receive.state = 'waiting';
     receive.message = `resuming from ${formatBytes(receive.bytes)}`;
     send(receive.peerId, { type: 'resume', fileId: receive.id, offset: receive.bytes });
@@ -919,13 +824,11 @@ async function pauseIncomingForResume(receive, pc) {
   return true;
 }
 
-function onIncomingDataChannel(pc, channel) {
-  if (!channel.label.startsWith('drop:')) return;
-  const peerId = peerIdForConnection(pc);
-  const receive = peerId && findIncoming(peerId, channel.label.slice(5));
+function onIncomingDataChannel(peerId, channel, fileId) {
+  const receive = peerId && findIncoming(peerId, fileId);
   if (!receive || receive.state !== 'waiting') {
     channel.close();
-    if (peerId) send(peerId, { type: 'cancel', fileId: channel.label.slice(5), reason: 'That file was not accepted.' });
+    if (peerId) send(peerId, { type: 'cancel', fileId, reason: 'That file was not accepted.' });
     return;
   }
   channel.binaryType = 'arraybuffer';
@@ -966,13 +869,13 @@ function onIncomingDataChannel(pc, channel) {
     renderIncoming();
   });
   channel.addEventListener('error', async () => {
-    if (!await pauseIncomingForResume(receive, pc)) {
-      failReceive(receive, `The file data channel failed. ${connectionLabel(pc)}.`);
+    if (!await pauseIncomingForResume(receive)) {
+      failReceive(receive, `The file data channel failed. ${connectionLabel(state.conn?.getStatus(peerId))}.`);
     }
   });
   channel.addEventListener('close', async () => {
     if (receive.state !== 'receiving') return;
-    if (!await pauseIncomingForResume(receive, pc)) {
+    if (!await pauseIncomingForResume(receive)) {
       failReceive(receive, `The file channel closed before every byte arrived (${receive.bytes}/${receive.size}).`);
     }
   });
@@ -1076,31 +979,11 @@ function saveBlob(receive) {
   anchor.remove();
 }
 
-async function updatePaths() {
-  for (const peer of state.peers.values()) {
-    const pc = getPeerConnection(peer.id);
-    if (!pc || pc.connectionState !== 'connected') continue;
-    try {
-      const report = await pc.getStats();
-      let relay = false;
-      for (const entry of report.values()) {
-        if (entry.type !== 'candidate-pair' || entry.state !== 'succeeded') continue;
-        const local = report.get(entry.localCandidateId);
-        const remote = report.get(entry.remoteCandidateId);
-        relay ||= local?.candidateType === 'relay' || remote?.candidateType === 'relay';
-      }
-      peer.path = relay ? 'relay' : 'direct';
-    } catch { peer.path = 'unknown path'; }
-  }
-  renderPeople();
-}
-
 function tick() {
-  updatePaths();
   const now = Date.now();
   for (const receive of state.incoming.values()) {
     if (receive.state === 'receiving' && now - receive.lastByteAt >= STALL_MS) {
-      failReceive(receive, `Stalled: no data from ${receive.senderName} for 15 s. ${connectionLabel(getPeerConnection(receive.peerId))}.`);
+      failReceive(receive, `Stalled: no data from ${receive.senderName} for 15 s. ${connectionLabel(state.conn?.getStatus(receive.peerId))}.`);
     }
   }
 }
@@ -1117,7 +1000,7 @@ function runConsole(command) {
       app: { name: APP_ID, version: VERSION, protocol: PROTOCOL },
       self: state.selfId,
       peers: state.peers.size,
-      connections: [...allPCs].map((pc) => ({ state: pc.connectionState, ice: pc.iceConnectionState })),
+      connections: state.peers.size ? [...state.peers.keys()].map((id) => state.conn?.getStatus(id)) : [],
       incoming: state.incoming.size,
       outgoing: state.outgoing.size,
       memoryLimit: MEMORY_LIMIT,
@@ -1235,8 +1118,8 @@ function initializeEvents() {
 async function cleanupRoom({ notify = true } = {}) {
   if (state.cancelled && !state.joined && !state.incoming.size && !state.outgoing.size) return;
   state.cancelled = true;
-  if (notify && state.action && state.room) {
-    try { await state.action.send({ type: 'cancel-all', reason: 'The participant left the room.' }); } catch {}
+  if (notify && state.conn) {
+    try { await state.conn.send(null, { type: 'cancel-all', reason: 'The participant left the room.' }); } catch {}
   }
   for (const receive of state.incoming.values()) {
     if (receive.url) {
@@ -1260,14 +1143,9 @@ async function cleanupRoom({ notify = true } = {}) {
   state.incoming.clear();
   state.outgoing.clear();
   state.peers.clear();
-  try { state.room?.leave(); } catch {}
-  for (const pc of allPCs) {
-    try { pc.close(); } catch {}
-  }
-  allPCs.clear();
+  try { state.conn?.leave(); } catch {}
   state.joined = false;
-  state.room = null;
-  state.action = null;
+  state.conn = null;
   state.selfId = null;
   if (screenWakeLock) {
     await screenWakeLock.release().catch(() => {});
@@ -1291,7 +1169,7 @@ addEventListener('pagehide', () => {
   void cleanupRoom({ notify: false });
 });
 
-window.drop = { state, allPCs, deriveRoom, executableWarning, sanitizeManifestNames, validateManifest, runConsole, loadVerified, diagnoseConnection };
+window.drop = { state, get allPCs() { return state.conn?.allPeerConnections || new Set(); }, deriveRoom, executableWarning, sanitizeManifestNames, validateManifest, runConsole, loadVerified, diagnoseConnection };
 
 initializeEvents();
 if (state.secret) {

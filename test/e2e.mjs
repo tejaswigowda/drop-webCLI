@@ -134,7 +134,7 @@ try {
     await noRelay.goto(origin);
     await noRelay.click('#createRoom');
     check('no reachable relay produces a named error', await until(async () =>
-      /RELAY_UNREACHABLE/.test(await noRelay.textContent('#errorBanner')), 12_000));
+      /NO_RELAY_REACHABLE/.test(await noRelay.textContent('#errorBanner')), 12_000));
     await noRelay.context().close();
   }
 
@@ -221,7 +221,7 @@ try {
   for (const context of contexts) for (const page of context.pages()) {
     console.error(await page.locator('body').textContent().catch(() => 'unavailable'));
     console.error(await page.evaluate(() => ({
-      peers: Object.keys(window.drop?.state.room?.getPeers() || {}),
+      peers: (window.drop?.state.conn?.peers || []).map((peer) => peer.peerId),
       pcs: window.drop?.allPCs.size,
       pcStates: [...(window.drop?.allPCs || [])].map((pc) => ({ connection: pc.connectionState, ice: pc.iceConnectionState })),
       console: document.querySelector('#consoleOut')?.textContent,

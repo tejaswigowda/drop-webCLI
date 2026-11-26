@@ -1,3 +1,5 @@
+import { b64u, deriveRoom as deriveRoomWithLabels, hex } from 'only-connect';
+
 export const APP_ID = 'drop-webCLI';
 export const PROTOCOL = 1;
 export const TOPIC_LABEL = 'drop-webCLI/v1/topic';
@@ -5,21 +7,14 @@ export const SDP_LABEL = 'drop-webCLI/v1/sdp';
 export const MAX_FILES = 500;
 export const MAX_NAME_LENGTH = 200;
 export const CHUNK_SIZE = 16 * 1024;
-export const HIGH_WATER_MARK = 4 * 1024 * 1024;
-export const LOW_WATER_MARK = 1024 * 1024;
-export const STALL_MS = 15_000;
 export const MAX_ACTIVE_RECEIVERS = 3;
 export const INVITE_LIFETIME_MS = 60 * 60 * 1000;
-export const RELAYS = [
-  'wss://no.str.cr',
-  'wss://relay.wavlake.com',
-  'wss://nostr.hifish.org',
-  'wss://relay.notoshi.win',
-  'wss://relay.dwadziesciajeden.pl',
-];
-export const DEFAULT_STUN = 'stun:stun.cloudflare.com:3478';
 
-const enc = new TextEncoder();
+export {
+  DEFAULT_STUN, HIGH_WATER_MARK, LOW_WATER_MARK, STALL_MS, b64u, concat, hex,
+} from 'only-connect';
+export { DEFAULT_RELAYS as RELAYS } from 'only-connect';
+
 const WEB_UR_SAFE = /^[-A-Za-z0-9_]{22}$/;
 const PROGRAM_EXTENSIONS = new Set([
   '.exe', '.dmg', '.pkg', '.app', '.msi', '.bat', '.cmd', '.sh', '.command',
@@ -27,23 +22,6 @@ const PROGRAM_EXTENSIONS = new Set([
 ]);
 const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const CONTROL_OR_FORMAT = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/gu;
-
-export const b64u = {
-  encode(bytes) {
-    let binary = '';
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  },
-  decode(value) {
-    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-    const binary = atob(normalized + '='.repeat((4 - normalized.length % 4) % 4));
-    return Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  },
-};
-
-export function hex(bytes) {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
 
 export function parseInvite(hash) {
   const match = /^#k=([-A-Za-z0-9_]{22})&e=([0-9]+)$/.exec(hash);
@@ -70,23 +48,8 @@ export function inviteHash(invite) {
   return `#k=${b64u.encode(invite.secret)}&e=${invite.expiresAt}`;
 }
 
-export function concat(first, second) {
-  const output = new Uint8Array(first.length + second.length);
-  output.set(first);
-  output.set(second, first.length);
-  return output;
-}
-
-export async function deriveRoom(secret, expiresAt) {
-  const expiry = enc.encode(`:${expiresAt}`);
-  const topic = new Uint8Array(await crypto.subtle.digest('SHA-256', concat(enc.encode(TOPIC_LABEL), concat(secret, expiry))));
-  const key = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveBits']);
-  const password = new Uint8Array(await crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt: expiry, info: enc.encode(SDP_LABEL) },
-    key,
-    256,
-  ));
-  return { roomId: hex(topic), password: b64u.encode(password) };
+export function deriveRoom(secret, expiresAt) {
+  return deriveRoomWithLabels(secret, expiresAt, { topicLabel: TOPIC_LABEL, sdpLabel: SDP_LABEL });
 }
 
 export function formatBytes(bytes) {
@@ -184,32 +147,4 @@ export async function hashFile(file, sha256, onProgress = () => {}) {
   return hex(hasher.digest());
 }
 
-export function waitForChannelDrain(channel) {
-  if (channel.bufferedAmount <= HIGH_WATER_MARK) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error('The connection stalled while waiting for the peer to receive data.'));
-    }, STALL_MS);
-    const cleanup = () => {
-      clearTimeout(timeout);
-      channel.removeEventListener('bufferedamountlow', low);
-      channel.removeEventListener('close', closed);
-      channel.removeEventListener('error', closed);
-    };
-    const low = () => {
-      if (channel.bufferedAmount <= LOW_WATER_MARK) {
-        cleanup();
-        resolve();
-      }
-    };
-    const closed = () => {
-      cleanup();
-      reject(new Error('The transfer connection closed while data was buffered.'));
-    };
-    channel.addEventListener('bufferedamountlow', low);
-    channel.addEventListener('close', closed);
-    channel.addEventListener('error', closed);
-    if (channel.bufferedAmount <= LOW_WATER_MARK) low();
-  });
-}
+export { waitForChannelDrain } from 'only-connect';
