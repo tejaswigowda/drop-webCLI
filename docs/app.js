@@ -1,7 +1,7 @@
 import {
   APP_ID, CHUNK_SIZE, DEFAULT_STUN, HIGH_WATER_MARK, MAX_ACTIVE_RECEIVERS,
   MAX_FILES, PROTOCOL, RELAYS, SDP_LABEL, STALL_MS, TOPIC_LABEL, deriveRoom, executableWarning, formatBytes,
-  hashFile, hex, inviteHash, makeInviteSecret, parseInvite, sanitizeManifestNames, validateManifest,
+  hashFile, hex, inviteHash, makeInviteSecret, parseInvite, parseRunRequest, sanitizeManifestNames, validateManifest,
   waitForChannelDrain,
 } from './lib/core.js';
 import {
@@ -9,7 +9,7 @@ import {
 } from 'only-connect';
 
 const PINS = /*PINS*/{"trystero-nostr.js":{"version":"0.27.0","package":"@trystero-p2p/nostr","sha256":"d26013f7ecae563f4fcdbf7dece219cfdb5f2d3efc2caff32df9a768d5066fc6"},"qrcode.js":{"version":"1.5.2","package":"qrcode-generator","sha256":"065509cfd450f89dbffccc8e37d16f5cb03099aef7c36ab2a23d27611bd97b03"},"sha256.js":{"version":"2.0.1","package":"@noble/hashes","sha256":"d1cc9098f317cf4c5c1652090f680cd4303a9854e345845199ccdae64269c79e"}}/*END-PINS*/;
-const VERSION = '0.2.9';
+const VERSION = '0.3.0';
 const APP_DIR = (() => {
   const pathname = location.pathname;
   if (pathname.endsWith('/')) return pathname;
@@ -27,6 +27,8 @@ const $ = (selector) => document.querySelector(selector);
 const ui = {
   error: $('#errorBanner'), start: $('#startScreen'), room: $('#roomScreen'),
   displayName: $('#displayName'), inviteLink: $('#inviteLink'), people: $('#people'),
+  runPanel: $('#runPanel'), runMessage: $('#runMessage'), runInvite: $('#runInvite'),
+  runInviteOpen: $('#runInviteOpen'),
   sendTo: $('#sendTo'), fileInput: $('#fileInput'), dropZone: $('#dropZone'),
   preparing: $('#preparing'), incoming: $('#incoming'), outgoing: $('#outgoing'),
   incomingAlert: $('#incomingAlert'),
@@ -1060,11 +1062,66 @@ async function renderQr() {
   ui.qrDialog.showModal();
 }
 
+function publishRunResult(result) {
+  window.__webcli_result = result;
+  document.body.dataset.webcliStatus = result.ok ? 'done' : 'error';
+  ui.runPanel.classList.remove('hidden');
+  ui.runMessage.textContent = result.ok
+    ? 'Invite created locally. No room was joined and no network connection was made.'
+    : result.error;
+  if (!result.ok) return;
+  ui.runInvite.value = result.meta.inviteUrl;
+  ui.runInviteOpen.href = result.meta.inviteUrl;
+  ui.runInviteOpen.classList.remove('hidden');
+}
+
+function runUrlOperation() {
+  let operation;
+  try {
+    operation = parseRunRequest(location.hash);
+  } catch (cause) {
+    publishRunResult({ ok: false, op: 'invite', artifact: null, error: cause.message, meta: { tool: APP_ID } });
+    return true;
+  }
+  if (!operation) return false;
+  document.body.dataset.webcliStatus = 'running';
+  try {
+    const newInvite = makeInviteSecret();
+    const inviteUrl = `${location.origin}${APP_DIR}${inviteHash(newInvite)}`;
+    const content = `${inviteUrl}\n`;
+    const artifact = {
+      mime: 'text/plain',
+      name: 'drop-invite.txt',
+      size: new TextEncoder().encode(content).byteLength,
+      dataUrl: `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`,
+    };
+    publishRunResult({
+      ok: true,
+      op: operation,
+      artifact,
+      error: null,
+      meta: { tool: APP_ID, inviteUrl, expiresAt: newInvite.expiresAt, roomJoined: false, network: 'none' },
+    });
+  } catch (cause) {
+    publishRunResult({ ok: false, op: operation, artifact: null, error: cause?.message || String(cause), meta: { tool: APP_ID } });
+  }
+  return true;
+}
+
 function initializeEvents() {
   $('#createRoom').addEventListener('click', () => {
     enterRoom(!state.secret).catch((cause) => error(`Could not enter the room: ${cause?.message || cause}`));
   });
   ui.displayName.addEventListener('change', saveSettings);
+  $('#copyRunInvite').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(ui.runInvite.value);
+      $('#copyRunInvite').textContent = 'Copied';
+      setTimeout(() => { $('#copyRunInvite').textContent = 'Copy invite'; }, 1200);
+    } catch (cause) {
+      error(`Could not copy the invite: ${cause?.message || cause}`);
+    }
+  });
   ui.fileInput.addEventListener('change', () => prepareFiles(ui.fileInput.files));
   ui.dropZone.addEventListener('dragover', (event) => { event.preventDefault(); ui.dropZone.classList.add('drag'); });
   ui.dropZone.addEventListener('dragleave', () => ui.dropZone.classList.remove('drag'));
@@ -1172,7 +1229,9 @@ addEventListener('pagehide', () => {
 window.drop = { state, get allPCs() { return state.conn?.allPeerConnections || new Set(); }, deriveRoom, executableWarning, sanitizeManifestNames, validateManifest, runConsole, loadVerified, diagnoseConnection };
 
 initializeEvents();
-if (state.secret) {
+if (runUrlOperation()) {
+  showRoom(false);
+} else if (state.secret) {
   showRoom(false);
   $('#startScreen .eyebrow').textContent = 'Room invitation';
   $('#startScreen h1').textContent = 'Join this room';

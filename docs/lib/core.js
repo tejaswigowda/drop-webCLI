@@ -36,6 +36,19 @@ export function parseInvite(hash) {
   }
 }
 
+export function parseRunRequest(hash) {
+  const params = new URLSearchParams(String(hash || '').replace(/^#/, ''));
+  if (!params.has('run')) return null;
+  const names = [...params.keys()];
+  if (names.length !== 1 || names[0] !== 'run' || params.getAll('run').length !== 1) {
+    throw new Error('Use #run=invite without additional parameters.');
+  }
+  if (params.get('run') !== 'invite') {
+    throw new Error('Unsupported Drop operation. Use #run=invite.');
+  }
+  return 'invite';
+}
+
 export function makeSecret() {
   return crypto.getRandomValues(new Uint8Array(16));
 }

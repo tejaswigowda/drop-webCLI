@@ -85,6 +85,40 @@ try {
   }
 
   const requests = [];
+  const runRequests = [];
+  const runSockets = [];
+  const runPage = await open();
+  runPage.on('request', (request) => {
+    requests.push(request.url());
+    runRequests.push(request.url());
+  });
+  runPage.on('websocket', (socket) => runSockets.push(socket.url()));
+  await runPage.goto(`${origin}/#run=invite`);
+  await runPage.waitForFunction(() => document.body.dataset.webcliStatus === 'done');
+  const runResult = await runPage.evaluate(() => window.__webcli_result);
+  const generatedInvite = await runPage.inputValue('#runInvite');
+  check('URL run creates a usable invite artifact without joining a room',
+    runResult.ok
+      && runResult.op === 'invite'
+      && runResult.artifact.mime === 'text/plain'
+      && runResult.artifact.name === 'drop-invite.txt'
+      && decodeURIComponent(runResult.artifact.dataUrl.split(',')[1]).trim() === generatedInvite
+      && /#k=[-_A-Za-z0-9]{22}&e=\d+$/.test(generatedInvite)
+      && runResult.meta.roomJoined === false
+      && runResult.meta.network === 'none'
+      && await runPage.evaluate(() => !window.drop.state.joined && window.drop.state.conn === null));
+  check('URL run makes no relay or third-party requests',
+    runRequests.every((url) => new URL(url).origin === origin) && runSockets.length === 0);
+
+  const invalidRunPage = await open();
+  await invalidRunPage.goto(`${origin}/#run=send`);
+  await invalidRunPage.waitForFunction(() => document.body.dataset.webcliStatus === 'error');
+  check('unsupported URL operations publish an explicit error without joining',
+    await invalidRunPage.evaluate(() => !window.__webcli_result.ok
+      && /Unsupported Drop operation/.test(window.__webcli_result.error)
+      && !window.drop.state.joined
+      && window.drop.state.conn === null));
+
   const sender = await open({ flipFirstByte: corrupt });
   sender.on('request', (request) => requests.push(request.url()));
   await sender.goto(origin);

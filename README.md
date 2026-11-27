@@ -7,12 +7,13 @@ This is not storage, a cloud locker, a mailbox, or â€œAirDrop for the internet.â
 **It does not break the static-page boundary. It trades storage for synchrony.** drop-webCLI keeps both parties present instead of storing a payload. box-webCLI is deliberately the opposite architecture: stored content and token-based access.
 
 **Live app:** https://drop.webcli.app/
-**Status:** v0.2.8; functional for current desktop testing, with browser-size ceilings, throughput, and the wider device matrix still explicitly pending below.
+**Status:** v0.3.0; functional for current desktop testing, with browser-size ceilings, throughput, and the wider device matrix still explicitly pending below.
 
 ## Status
 
-`v0.2.8` uses a visible 10-participant limit and 60-minute room links, adds folder-backed resume, keeps supported displays awake during incoming transfers, and automatically downloads verified in-memory files. The automated suite covers:
+`v0.3.0` adds `#run=invite`, which creates a time-limited invite artifact entirely in the browser without joining a room or contacting the network. Opening the generated invite still requires an explicit user action, and each received file still requires its own Accept. The release also uses a visible 10-participant limit and 60-minute room links, adds folder-backed resume, keeps supported displays awake during incoming transfers, and automatically downloads verified in-memory files. The automated suite covers:
 
+- URL-run invite generation and its no-network boundary;
 - a 128-bit invite secret that appears only in the URL fragment;
 - different `drop-webCLI` topic/password derivation labels;
 - room invitation and membership;

@@ -2,8 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   MAX_FILES, TOPIC_LABEL, b64u, deriveRoom, executableWarning, formatBytes,
-  inviteHash, parseInvite, sanitizeName, validateManifest,
+  inviteHash, parseInvite, parseRunRequest, sanitizeName, validateManifest,
 } from '../docs/lib/core.js';
+
+test('URL run accepts only the local invite-generation operation', () => {
+  assert.equal(parseRunRequest('#run=invite'), 'invite');
+  assert.equal(parseRunRequest('#k=AAAAAAAAAAAAAAAAAAAAAA&e=123'), null);
+  assert.throws(() => parseRunRequest('#run=send'), /Unsupported Drop operation/);
+  assert.throws(() => parseRunRequest('#run=invite&file=secret.txt'), /without additional parameters/);
+  assert.throws(() => parseRunRequest('#run=invite&run=invite'), /without additional parameters/);
+});
 
 test('invite secret is fragment-only and exactly 128 bits', () => {
   const secret = Uint8Array.from({ length: 16 }, (_, i) => i);

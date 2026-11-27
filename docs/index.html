@@ -8,7 +8,7 @@
   <!--IMPORTMAP--><script type="importmap">{"imports":{"only-connect":"./lib/only-connect.93374d5a9e75.js"}}</script><!--END-IMPORTMAP-->
   <title>drop-webCLI</title>
   <meta name="description" content="Create a room and exchange SHA-256 verified files directly between browsers.">
-  <link rel="stylesheet" href="style.css?v=0.2.9">
+  <link rel="stylesheet" href="style.css?v=0.3.0">
 </head>
 <body>
   <header>
@@ -57,6 +57,14 @@
         </label>
         <button id="createRoom" class="primary large">Create room</button>
       </div>
+      <section id="runPanel" class="banner info hidden" role="status" aria-live="polite">
+        <p id="runMessage"></p>
+        <div class="copy-row">
+          <input id="runInvite" aria-label="Generated room invite" readonly>
+          <button id="copyRunInvite" type="button">Copy invite</button>
+        </div>
+        <a id="runInviteOpen" class="hidden" target="_blank" rel="noopener">Open invite</a>
+      </section>
       <p class="hash-note">Rooms exist only while someone is in them. No files are stored by a server.</p>
     </section>
 
@@ -164,6 +172,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="app.js?v=0.2.9"></script>
+  <script type="module" src="app.js?v=0.3.0"></script>
 </body>
 </html>
